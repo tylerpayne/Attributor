@@ -125,10 +125,18 @@ class Evaluator:
             case.documents,
         )
 
+        attributed_document_ids = []
+        attributed_document_scores = []
+
+        for i, score in attributed_documents:
+            attributed_document_ids.append(i)
+            attributed_document_scores.append(score)
+
         return EvaluationResult(
             case=case,
             generated_output=output_text,
-            attributed_documents=[i for i, score in attributed_documents],
+            attributed_documents=attributed_document_ids,
+            attributed_document_scores=attributed_document_scores,
             verification=verification,
         )
 

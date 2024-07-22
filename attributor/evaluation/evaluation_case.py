@@ -11,4 +11,5 @@ class EvaluationResult(BaseModel):
     case: SerializeAsAny[EvaluationCase]
     generated_output: str
     attributed_documents: list[int]
+    attributed_document_scores: list[float]
     verification: bool | None = None
