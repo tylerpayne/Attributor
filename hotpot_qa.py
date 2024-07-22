@@ -141,12 +141,17 @@ def main(args):
 
     def format(case: HotpotQAEvaluationCase):
         return case.context
+    
+    def verifier(*args, **kwargs):
+        return openai_verifier(
+            *args, openai_client=args.openai_api_key, **kwargs
+        )
 
     evaluator = Evaluator(
         attributor=attributor,
         formatter=format,
         progress_dirpath=progress_dirpath,
-        verifier=openai_verifier,
+        verifier=verifier,
     )
 
     evaluator.evaluate(
@@ -165,6 +170,7 @@ def get_args():
     parser.add_argument("--max_context_tokens", type=int, default=1000)
     parser.add_argument("--trust_remote_code", default=False, action="store_true")
     parser.add_argument("--overwrite", default=False, action="store_true")
+    parser.add_argument("--openai_api_key", default=None)
 
     group = parser.add_mutually_exclusive_group()
     group.add_argument(
