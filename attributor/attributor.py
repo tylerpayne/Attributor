@@ -26,9 +26,6 @@ class Attributor:
         # Sum over attention heads (total attention from token i to j). now A is [len, len]
         A = A.sum(axis=0)
 
-        # Normalize total attention per token.
-        A /= A.sum(axis=-1, keepdim=True)
-
         # attention over inputs
         Y = torch.matmul(A, inputs)
 
