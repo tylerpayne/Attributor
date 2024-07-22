@@ -28,7 +28,7 @@ def openai_verifier(
     ]
 
     if max_rpm is not None:
-        rate_delay = math.ceil(60 / max_rpm + 1e-2)
+        rate_delay = 60 / max_rpm + 1e-2
     else:
         rate_delay = 0
 
