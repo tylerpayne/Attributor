@@ -110,6 +110,7 @@ def main(args):
         device_map=args.device_map,
         torch_dtype=torch_dtype,
         trust_remote_code=args.trust_remote_code,
+        attn_implementation="eager"
     )
 
     logger.info(f"Loading tokenizer for {args.model}.")
