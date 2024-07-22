@@ -22,7 +22,7 @@ class Attributor:
         """
 
         # Remove batch dimension (which must be one), now A is [heads, len, len]
-        A = attention.squeeze(0)
+        A = attention.squeeze(0).type(torch.float64)
         # Sum over attention heads (total attention from token i to j). now A is [len, len]
         A = A.sum(axis=0)
 
@@ -40,7 +40,8 @@ class Attributor:
     # @torch.compile
     def attribute(self, attentions):
         n = attentions[0].shape[2]
-        Y = torch.eye(n, n, dtype=attentions[0].dtype).to(attentions[0].device)
+        # Values will get close to 0, use lots of precision
+        Y = torch.eye(n, n, dtype=torch.float64).to(attentions[0].device)
         for A in attentions:
             Y = self.forward(Y, A)
 
