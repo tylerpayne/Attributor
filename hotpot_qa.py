@@ -141,10 +141,10 @@ def main(args):
 
     def format(case: HotpotQAEvaluationCase):
         return case.context
-    
-    def verifier(*args, **kwargs):
+
+    def verifier(*verifier_args, **verifier_kwargs):
         return openai_verifier(
-            *args, openai_client=args.openai_api_key, **kwargs
+            *verifier_args, openai_client=args.openai_api_key, **verifier_kwargs
         )
 
     evaluator = Evaluator(
