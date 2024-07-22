@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, SerializeAsAny
 
 
 class EvaluationCase(BaseModel):
@@ -8,7 +8,7 @@ class EvaluationCase(BaseModel):
 
 
 class EvaluationResult(BaseModel):
-    case: EvaluationCase
+    case: SerializeAsAny[EvaluationCase]
     generated_output: str
     attributed_documents: list[int]
     verification: bool | None = None
