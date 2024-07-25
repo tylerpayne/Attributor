@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Evaluation Results Explorer</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+    <div id="app">
+        <h1>Evaluation Results Explorer</h1>
+        <div id="file-input">
+            <input type="file" id="file-selector" accept=".json">
+            <button id="load-button">Load File</button>
+        </div>
+        <div id="results-container"></div>
+    </div>
+    <script>
+        const fileSelector = document.getElementById('file-selector');
+        const loadButton = document.getElementById('load-button');
+        const resultsContainer = document.getElementById('results-container');
+
+        loadButton.addEventListener('click', () => {
+            const file = fileSelector.files[0];
+            if (file) {
+                const formData = new FormData();
+                formData.append('file', file);
+
+                fetch('/process_file', {
+                    method: 'POST',
+                    body: formData
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        resultsContainer.innerHTML = `<p class="error">${data.error}</p>`;
+                    } else {
+                        displayResults(data);
+                    }
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    resultsContainer.innerHTML = '<p class="error">An error occurred while processing the file.</p>';
+                });
+            } else {
+                resultsContainer.innerHTML = '<p class="error">Please select a file first.</p>';
+            }
+        });
+
+        function calculateRecall(supporting, attributed, k) {
+            const topK = attributed.slice(0, k);
+            const correctTopK = topK.filter(doc => supporting.includes(doc));
+            return supporting.length > 0 ? correctTopK.length / supporting.length : 0;
+        }
+
+        function calculateRecall(supporting, attributed, k) {
+            const topK = attributed.slice(0, k);
+            const correctTopK = topK.filter(doc => supporting.includes(doc));
+            return supporting.length > 0 ? correctTopK.length / supporting.length : 0;
+        }
+
+        function displayResults(data) {
+            resultsContainer.innerHTML = '';
+            data.forEach((result, index) => {
+                const resultDiv = document.createElement('div');
+                resultDiv.className = 'result';
+                
+                const supportingDocs = result.case.supporting_documents;
+                const attributedDocs = result.attributed_documents;
+                
+                const recall3 = calculateRecall(supportingDocs, attributedDocs, 3);
+                const recall5 = calculateRecall(supportingDocs, attributedDocs, 5);
+                const recall10 = calculateRecall(supportingDocs, attributedDocs, 10);
+                
+                resultDiv.innerHTML = `
+                    <h2>Result ${index + 1}</h2>
+                    <div class="output-comparison">
+                        <div class="output-column">
+                            <h3>Expected Output:</h3>
+                            <p>${result.case.expected_output}</p>
+                        </div>
+                        <div class="output-column">
+                            <h3>Generated Output:</h3>
+                            <p>${result.generated_output}</p>
+                        </div>
+                        <div class="output-column verification">
+                            <h3>Verification:</h3>
+                            <p>${result.verification !== null ? result.verification : 'N/A'}</p>
+                        </div>
+                    </div>
+                    <div class="recall-info">
+                        <h3>Recall:</h3>
+                        <p>Recall@3: ${recall3.toFixed(2)}</p>
+                        <p>Recall@5: ${recall5.toFixed(2)}</p>
+                        <p>Recall@10: ${recall10.toFixed(2)}</p>
+                        <div class="custom-recall">
+                            <label for="recall-k-${index}">Custom Recall@k:</label>
+                            <input type="number" id="recall-k-${index}" value="15" min="1" max="${attributedDocs.length}">
+                            <button onclick="updateCustomRecall(${index}, ${JSON.stringify(supportingDocs)}, ${JSON.stringify(attributedDocs)})">Calculate</button>
+                            <span id="custom-recall-result-${index}"></span>
+                        </div>
+                    </div>
+                    <div class="additional-info">
+                        <div class="collapsible">
+                            <h3 class="collapsible-header">Supporting Documents (${supportingDocs.length}) <span class="toggle-icon">+</span></h3>
+                            <div class="collapsible-content">
+                                <ul>
+                                    ${supportingDocs.map((docIndex) => `<li><strong>Document ${docIndex}:</strong> ${result.case.documents[docIndex]}</li>`).join('')}
+                                </ul>
+                            </div>
+                        </div>
+                        <div class="collapsible">
+                            <h3 class="collapsible-header">Attributed Documents (${attributedDocs.length}) <span class="toggle-icon">+</span></h3>
+                            <div class="collapsible-content">
+                                <div class="filter-container">
+                                    <label for="filter-${index}">Show top: </label>
+                                    <select id="filter-${index}" class="filter-dropdown">
+                                        <option value="all">All</option>
+                                        ${[1, 2, 3, 5, 10].map(k => `<option value="${k}">${k}</option>`).join('')}
+                                    </select>
+                                </div>
+                                <ul class="attributed-docs-list">
+                                    ${attributedDocs.map((docIndex, i) => `
+                                        <li class="${supportingDocs.includes(docIndex) ? 'supporting' : 'non-supporting'}">
+                                            <strong>Document ${docIndex}:</strong> ${result.case.documents[docIndex]}
+                                            <br>
+                                            <em>Score: ${result.attributed_document_scores[i]}</em>
+                                        </li>`).join('')}
+                                </ul>
+                            </div>
+                        </div>
+                        <div class="collapsible">
+                            <h3 class="collapsible-header">All Documents (${result.case.documents.length}) <span class="toggle-icon">+</span></h3>
+                            <div class="collapsible-content">
+                                <ul>
+                                    ${result.case.documents.map((doc, i) => `<li><strong>Document ${i}:</strong> ${doc}</li>`).join('')}
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                resultsContainer.appendChild(resultDiv);
+
+                // Add event listeners for the filter dropdowns
+                const filterDropdown = resultDiv.querySelector('.filter-dropdown');
+                filterDropdown.addEventListener('change', (event) => {
+                    const k = event.target.value;
+                    const attributedDocsList = resultDiv.querySelector('.attributed-docs-list');
+                    const items = attributedDocsList.querySelectorAll('li');
+                    
+                    items.forEach((item, i) => {
+                        if (k === 'all' || i < parseInt(k)) {
+                            item.style.display = '';
+                        } else {
+                            item.style.display = 'none';
+                        }
+                    });
+                });
+
+                // Add event listeners for all collapsible sections
+                const collapsibleHeaders = resultDiv.querySelectorAll('.collapsible-header');
+                collapsibleHeaders.forEach(header => {
+                    header.addEventListener('click', () => {
+                        header.classList.toggle('active');
+                        const content = header.nextElementSibling;
+                        if (content.style.display === 'block') {
+                            content.style.display = 'none';
+                            header.querySelector('.toggle-icon').textContent = '+';
+                        } else {
+                            content.style.display = 'block';
+                            header.querySelector('.toggle-icon').textContent = '-';
+                        }
+                    });
+                });
+            });
+        }
+
+        function updateCustomRecall(index, supportingDocs, attributedDocs) {
+            const kInput = document.getElementById(`recall-k-${index}`);
+            const k = parseInt(kInput.value);
+            const recall = calculateRecall(supportingDocs, attributedDocs, k);
+            document.getElementById(`custom-recall-result-${index}`).textContent = `Recall@${k}: ${recall.toFixed(2)}`;
+        }
+    </script>
+</body>
+</html>
