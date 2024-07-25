@@ -1,7 +1,7 @@
 import json
 import os
 from os import PathLike
-from typing import Callable, Iterable, Sequence
+from typing import Callable, Sequence
 
 import torch
 from pydantic import BaseModel
@@ -219,6 +219,7 @@ class Evaluator:
                         )
 
                     progress.iteration += 1
+                    torch.cuda.empty_cache()
 
         except (Exception, KeyboardInterrupt) as ex:
             raise ex
