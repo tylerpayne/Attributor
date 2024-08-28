@@ -14,7 +14,7 @@ from attributor.attributor import Attributor
 from attributor.evaluation.evaluation_case import EvaluationCase, EvaluationResult
 from attributor.evaluation.metrics import incremental_mean, precision, recall
 from attributor.span import Span
-from attributor.utils import tokenize
+from attributor.utils import find, tokenize
 
 logger = get_logger()
 
@@ -73,33 +73,40 @@ class Evaluator:
         self,
         *,
         case: EvaluationCase,
-        generation_config: GenerationConfig,
-        max_context_tokens: int | None = 1000,
+        generation_config: GenerationConfig | None = None,
+        max_context_tokens: int | None = 1000
     ):
         context = self.formatter(case)
         messages = [{"role": "user", "content": context}]
 
-        prompt_tokens = tokenize(self.attributor.tokenizer, messages)
-
-        if max_context_tokens is not None and (
-            prompt_tokens.shape[1] >= max_context_tokens
-        ):
+        prompt_tokens = tokenize(self.attributor.tokenizer, messages, add_generation_prompt=True)
+        if prompt_tokens.shape[1] >= max_context_tokens:
             return None
+        
+        if generation_config is None:
+            messages.append({
+                "role": "assistant",
+                "content": case.expected_output
+            })
+            
+            generated_tokens = tokenize(self.attributor.tokenizer, messages, add_generation_prompt=False)
+            generated_tokens.to(self.attributor.model.device)
+        else:
+            prompt_tokens = prompt_tokens.to(self.attributor.model.device)
 
-        prompt_tokens = prompt_tokens.to(self.attributor.model.device)
-
-        generated_tokens = self.attributor.model.generate(
-            prompt_tokens,
-            generation_config=generation_config,
-            tokenizer=self.attributor.tokenizer,
-            attention_mask=torch.ones_like(prompt_tokens),
-        )
+            generated_tokens = self.attributor.model.generate(
+                prompt_tokens,
+                generation_config=generation_config,
+                tokenizer=self.attributor.tokenizer,
+                attention_mask=torch.ones_like(prompt_tokens),
+            )
 
         attribution = self.attributor(generated_tokens)
 
         total_token_count = generated_tokens.shape[1]
         prompt_token_count = prompt_tokens.shape[1]
         output_token_count = total_token_count - prompt_token_count
+
 
         output_span = Span(
             start=prompt_token_count,
@@ -175,8 +182,7 @@ class Evaluator:
         self,
         *,
         cases: Sequence[EvaluationCase],
-        generation_config: GenerationConfig,
-        max_context_tokens: int | None = 1000,
+        generation_config: GenerationConfig | None = None,
     ):
         os.makedirs(self.progress_dirpath, exist_ok=True)
 
@@ -201,8 +207,7 @@ class Evaluator:
 
                         result = self._evaluate_case(
                             case=case,
-                            generation_config=generation_config,
-                            max_context_tokens=max_context_tokens,
+                            generation_config=generation_config
                         )
 
                         if result is not None:

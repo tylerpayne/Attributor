@@ -15,84 +15,84 @@ class Attribution:
     def imshow(
         self,
         *,
-        effect_span: Span = None,
-        treatment_span: Span = None,
-        ignore_treatments: torch.Tensor = None,
+        output_span: Span = None,
+        input_span: Span = None,
+        ignore_inputs: torch.Tensor = None,
     ):
         from matplotlib import pyplot as plt
 
         attributions = self._slice_attributions(
-            effect_span=effect_span,
-            treatment_span=treatment_span,
-            ignore_treatments=ignore_treatments,
+            output_span=output_span,
+            input_span=input_span,
+            ignore_inputs=ignore_inputs,
         )
         attributions /= attributions.max()
         attributions = attributions.cpu()
         plt.imshow(attributions)
 
     def _rolling_mean(
-        self, *, attributions: torch.Tensor, effect_span: Span, treatment_span: Span
+        self, *, attributions: torch.Tensor, output_span: Span, input_span: Span
     ):
-        effect_length = attributions.shape[0]
-        treatment_length = attributions.shape[1]
+        output_length = attributions.shape[0]
+        input_length = attributions.shape[1]
 
         rolling = [
             torch.stack(
                 [
                     attributions[
-                        i : i + effect_span.window_size,
-                        j : j + treatment_span.window_size,
+                        i : i + output_span.window_size,
+                        j : j + input_span.window_size,
                     ]
                     for j in range(
                         0,
-                        treatment_length - treatment_span.window_size + 1,
-                        treatment_span.step,
+                        input_length - input_span.window_size + 1,
+                        input_span.step,
                     )
                 ],
                 axis=0,
             )
             for i in range(
-                0, effect_length - effect_span.window_size + 1, effect_span.step
+                0, output_length - output_span.window_size + 1, output_span.step
             )
         ]
         rolling = torch.stack(rolling, axis=0)
         # total attribution in each window
         rolling = rolling.sum(axis=(-1, -2))
-        # normalize each effect's treatment distrubtion
+        # normalize each output's input distrubtion
         # rolling /= rolling.sum(axis=-1, keepdims=True)
         return rolling
 
     def _slice_attributions(
         self,
         *,
-        effect_span: Span = None,
-        treatment_span: Span = None,
-        ignore_treatments: torch.tensor = None,
+        output_span: Span = None,
+        input_span: Span = None,
+        ignore_inputs: torch.tensor = None,
     ):
-        treatment_span = treatment_span or Span()
-        effect_span = effect_span or Span()
+        input_span = input_span or Span()
+        output_span = output_span or Span()
 
         attributions = torch.clone(self.attributions)
 
-        if ignore_treatments is not None:
-            attributions[:, ignore_treatments] = 0
+        if ignore_inputs is not None:
+            attributions[:, ignore_inputs] = 0
 
         attributions = attributions[
-            slice(effect_span.start, effect_span.end),
-            slice(treatment_span.start, treatment_span.end),
+            slice(output_span.start, output_span.end),
+            slice(input_span.start, input_span.end),
         ]
 
         if (
-            effect_span.window_size
-            * effect_span.step
-            * treatment_span.window_size
-            * treatment_span.step
+            output_span.window_size
+            * output_span.step
+            * input_span.window_size
+            * input_span.step
             != 1
         ):
             attributions = self._rolling_mean(
                 attributions=attributions,
-                effect_span=effect_span,
-                treatment_span=treatment_span,
+                output_span=output_span,
+                input_span=input_span,
             )
 
         return attributions
@@ -102,35 +102,35 @@ class Attribution:
         *,
         attribution_values,
         attribution_argsort,
-        effect_span: Span = None,
-        treatment_span: Span = None,
+        output_span: Span = None,
+        input_span: Span = None,
     ):
-        treatment_span = treatment_span or Span()
-        effect_span = effect_span or Span()
+        input_span = input_span or Span()
+        output_span = output_span or Span()
 
-        effect_start = effect_span.start or 0
-        treatment_start = treatment_span.start or 0
+        output_start = output_span.start or 0
+        input_start = input_span.start or 0
 
         spans = []
         for i, row in enumerate(attribution_argsort):
-            effect_indices = torch.arange(
-                effect_start + i * effect_span.step,
-                effect_start + i * effect_span.step + effect_span.window_size,
+            output_indices = torch.arange(
+                output_start + i * output_span.step,
+                output_start + i * output_span.step + output_span.window_size,
             )
             spans.append([])
             for j, col in enumerate(row):
-                treatment_indices = torch.arange(
-                    treatment_start + col * treatment_span.step,
-                    treatment_start
-                    + col * treatment_span.step
-                    + treatment_span.window_size,
+                input_indices = torch.arange(
+                    input_start + col * input_span.step,
+                    input_start
+                    + col * input_span.step
+                    + input_span.window_size,
                 )
-                treatment_attribution = attribution_values[i, col]
+                input_attribution = attribution_values[i, col]
 
                 attribution_span = AttributionSpan(
-                    effect_indices=effect_indices,
-                    treatment_indices=treatment_indices,
-                    attribution=treatment_attribution,
+                    output_indices=output_indices,
+                    input_indices=input_indices,
+                    attribution=input_attribution,
                 )
 
                 spans[-1].append(attribution_span)
@@ -142,14 +142,14 @@ class Attribution:
         *,
         top_k: int = 3,
         top_k_offest: int = 0,
-        effect_span: Span = None,
-        treatment_span: Span = None,
-        ignore_treatments: torch.tensor = None,
+        output_span: Span = None,
+        input_span: Span = None,
+        ignore_inputs: torch.tensor = None,
     ):
         attributions = self._slice_attributions(
-            effect_span=effect_span,
-            treatment_span=treatment_span,
-            ignore_treatments=ignore_treatments,
+            output_span=output_span,
+            input_span=input_span,
+            ignore_inputs=ignore_inputs,
         )
 
         argsort = attributions.argsort(axis=1, descending=True)
@@ -158,22 +158,22 @@ class Attribution:
         return self._return_attribution_spans(
             attribution_values=attributions,
             attribution_argsort=argsort,
-            effect_span=effect_span,
-            treatment_span=treatment_span,
+            output_span=output_span,
+            input_span=input_span,
         )
 
     def outliers(
         self,
         *,
         std_threshold: float = 2,
-        effect_span: slice = None,
-        treatment_span: slice = None,
-        ignore_treatments: torch.tensor = None,
+        output_span: slice = None,
+        input_span: slice = None,
+        ignore_inputs: torch.tensor = None,
     ):
         attributions = self._slice_attributions(
-            effect_span=effect_span,
-            treatment_span=treatment_span,
-            ignore_treatments=ignore_treatments,
+            output_span=output_span,
+            input_span=input_span,
+            ignore_inputs=ignore_inputs,
         )
 
         mean = attributions.mean(axis=0, keepdims=True)
@@ -184,46 +184,46 @@ class Attribution:
         return self._return_attribution_spans(
             attribution_values=attributions,
             attribution_argsort=outliers,
-            effect_span=effect_span,
-            treatment_span=treatment_span,
+            output_span=output_span,
+            input_span=input_span,
         )
 
     def get(
         self,
         *,
-        effect_span: Span = None,
-        treatment_spans: Span | list[Span] | None = None,
-        ignore_treatments: torch.tensor = None,
+        output_span: Span = None,
+        input_spans: Span | list[Span] | None = None,
+        ignore_inputs: torch.tensor = None,
     ):
-        effect_span = effect_span or Span()
+        output_span = output_span or Span()
 
-        if isinstance(treatment_spans, (list, tuple)):
+        if isinstance(input_spans, (list, tuple)):
             results: list[AttributionSpan] = []
-            for span in treatment_spans:
-                results.append(self.get(effect_span=effect_span, treatment_spans=span))
+            for span in input_spans:
+                results.append(self.get(output_span=output_span, input_spans=span))
             return results
         else:
-            treatment_spans = treatment_spans or Span()
+            input_spans = input_spans or Span()
 
             attributions = self._slice_attributions(
-                effect_span=effect_span,
-                treatment_span=treatment_spans,
-                ignore_treatments=ignore_treatments,
+                output_span=output_span,
+                input_span=input_spans,
+                ignore_inputs=ignore_inputs,
             )
 
-            effect_start = effect_span.start or 0
-            treatment_start = treatment_spans.start or 0
+            output_start = output_span.start or 0
+            input_start = input_spans.start or 0
 
-            effect_end = effect_span.end or self.attributions.shape[0]
-            treatment_end = treatment_spans.end or self.attributions.shape[1]
+            output_end = output_span.end or self.attributions.shape[0]
+            input_end = input_spans.end or self.attributions.shape[1]
 
             return AttributionSpan(
-                effect_indices=list(range(effect_start, effect_end)),
-                treatment_indices=list(range(treatment_start, treatment_end)),
+                output_indices=list(range(output_start, output_end)),
+                input_indices=list(range(input_start, input_end)),
                 attribution=float(attributions.sum().cpu()),
             )
 
-    def sort(self, effect_span: Span, candidate_documents: list[str]):
+    def sort(self, output_span: Span, candidate_documents: list[str]):
         candidate_spans = []
         tokens_cpu = self.tokens.cpu()
         for sentence in candidate_documents:
@@ -237,7 +237,7 @@ class Attribution:
             else:
                 print(f"WARNING! Couldn't find document {sentence} in tokens")
         attribution_spans = self.get(
-            effect_span=effect_span, treatment_spans=candidate_spans
+            output_span=output_span, input_spans=candidate_spans
         )
         sorted_spans = sorted(
             enumerate(attribution_spans),

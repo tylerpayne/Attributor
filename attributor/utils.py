@@ -27,14 +27,13 @@ def find(tokens: torch.Tensor, subtokens: torch.Tensor, tolerance=5):
     raise IndexError("Subtokens not found in tokens")
 
 
-def tokenize(tokenizer, messages):
+def tokenize(tokenizer, messages, add_generation_prompt=False):
     return tokenizer.apply_chat_template(
-        messages, tokenize=True, add_generation_prompt=True, return_tensors="pt"
+        messages, tokenize=True, add_generation_prompt=add_generation_prompt, return_tensors="pt"
     )
 
-
 def generate(model, tokenizer, generation_config, messages):
-    prompt_tokens = tokenize(tokenizer, messages)
+    prompt_tokens = tokenize(tokenizer, messages, add_generation_prompt=True)
     prompt_tokens = prompt_tokens.to(model.device)
     return model.generate(
         prompt_tokens, tokenizer=tokenizer, generation_config=generation_config

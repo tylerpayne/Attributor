@@ -40,8 +40,6 @@ class Attributor:
 
         # Remove batch dimension (which must be one), now A is [heads, len, len]
         A = attention.squeeze(0).type(torch.float32)
-
-        # Reduce attention heads to single attention weight matrix according to head weights
         A = torch.multiply(A, attention_head_weights)
         A = A.sum(axis=0)
         A /= A.sum(axis=-1, keepdim=True)
@@ -50,9 +48,9 @@ class Attributor:
         Y = torch.matmul(A, inputs)
         
         # Post-attention residual
-        Y += inputs
+        # Y += inputs
 
-        # Post-mlp residual has no effect because it just Y += Y and we will normalize rows
+        # Post-mlp residual has no effect because it just Y += Y, but we will normalize rows
         # Normalize rows to 1
         Y /= Y.sum(axis=-1, keepdim=True)
 
@@ -62,12 +60,12 @@ class Attributor:
     def attribute(self, attentions):
         n = attentions[0].shape[2]
         # Values will get close to 0, use lots of precision
-        Y = torch.eye(n, n, dtype=torch.float32).to(attentions[0].device)
-        for A, o_proj in zip(attentions, self._get_attention_head_weights()):
-            Y = self.forward(Y, A, o_proj)
+        # Y = torch.eye(n, n, dtype=torch.float32).to(attentions[0].device)
+        # for A, o_proj in zip(attentions, self._get_attention_head_weights()):
+        #     Y = self.forward(Y, A, o_proj)
 
-        # Y = torch.stack(attentions, 0).sum(axis=(0,1,2))
-        # Y /= Y.sum(axis=-1)
+        Y = torch.stack(attentions, 0).sum(axis=(0,1,2))
+        Y /= Y.sum(axis=-1)
 
         # We now have Y[i, j] = amount that token j (input) was attended to when generating token i+1 (output), so we need to roll the output axis forward 1
         Y = torch.roll(Y, 1, 0)
