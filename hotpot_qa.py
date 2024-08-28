@@ -151,13 +151,13 @@ def main(args):
         attributor=attributor,
         formatter=format,
         progress_dirpath=progress_dirpath,
-        verifier=verifier,
+        # verifier=verifier,
     )
 
     evaluator.evaluate(
         cases=evaluation_cases,
-        generation_config=generation_config,
-        max_context_tokens=args.max_context_tokens,
+        # generation_config=generation_config,
+        # max_context_tokens=args.max_context_tokens,
     )
 
 
