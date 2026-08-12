@@ -88,6 +88,34 @@ The A/B that matters: `rollout` on the retrofitted checkpoint (prior applied at
 capture) vs. `unsquashed` on the frozen base model vs. plain `rollout` on the
 frozen base model.
 
+## Running on Modal GPUs
+
+[`modal_app.py`](modal_app.py) wraps both experiments for [Modal](https://modal.com):
+
+```sh
+pip install modal
+modal setup                      # one-time auth
+
+# Experiment 1: frozen-model A/B eval (L4 by default)
+modal run modal_app.py::evaluate --max-cases 500
+
+# Experiment 2: retrofit (A10G by default; detach for long runs)
+modal run --detach modal_app.py::retrofit --steps 5000
+
+# Evaluate the retrofitted checkpoint (its recorded prior is auto-applied)
+modal run modal_app.py::evaluate --model /results/train/HuggingFaceTB__SmolLM-135M-Instruct__unsquashed/final
+
+# Everything: base eval + retrofit in parallel, then checkpoint eval
+modal run --detach modal_app.py::pipeline
+```
+
+Artifacts persist in the `unsquash-results` volume
+(`modal volume get unsquash-results eval/<name>/summary.json .`); the HF cache
+lives in `unsquash-hf-cache` so models/datasets download once. Eval runs
+resume automatically under the same `--out-name`. Override GPU types with
+`UNSQUASH_EVAL_GPU` / `UNSQUASH_TRAIN_GPU` (e.g.
+`UNSQUASH_TRAIN_GPU=A100 modal run --detach modal_app.py::retrofit`).
+
 ## Notes and limitations
 
 - The correction is derived for the attention-only composition; with the
