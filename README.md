@@ -2,6 +2,12 @@
 
 Attributor is a library for evaluating and exploring attention attribution in Transformer networks.
 
+> **New:** [`unsquashed/`](unsquashed/) is a standalone package with the
+> de-biased ("unsquashed") rollout attribution method, a fixed and cleaned-up
+> HotpotQA evaluation harness for A/B-testing attribution methods, and a
+> continued-pretraining recipe that retrofits the correction into a model as an
+> attention prior. See [unsquashed/README.md](unsquashed/README.md).
+
 
 ## Installation
 
