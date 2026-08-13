@@ -238,7 +238,9 @@ def retrofit(
 ):
     """Experiment 2: continued pretraining with the annealed prior."""
     out_name = out_name or f"{_slug(model)}__unsquashed"
-    final = run_train.remote(
+    # spawn, not .remote(): a blocking call is cancelled server-side if this
+    # local client dies, killing the training task mid-run.
+    call = run_train.spawn(
         model=model,
         out_name=out_name,
         steps=steps,
@@ -251,6 +253,8 @@ def retrofit(
         dataset_config=dataset_config,
         prior_k=prior_k,
     )
+    print(f"Spawned training (survives client death): {call.object_id}")
+    final = call.get()
     print(f"\nFinal checkpoint (in the unsquash-results volume): {final}")
     print("Evaluate it (prior auto-applied) with:")
     print(f"  modal run modal_app.py::evaluate --model {final}")
@@ -269,18 +273,21 @@ def pipeline(
     train_name = f"{_slug(model)}__unsquashed"
 
     base_eval = run_eval.spawn(model=model, out_name=base_name, max_cases=max_cases)
-    final = run_train.remote(
+    # spawn + get, not .remote(): blocking calls are cancelled server-side if
+    # this local client dies; spawned calls run to completion regardless.
+    train_call = run_train.spawn(
         model=model,
         out_name=train_name,
         steps=steps,
         prior_warmup_steps=prior_warmup_steps,
     )
-    retro_summary = run_eval.remote(
+    final = train_call.get()
+    retro_summary = run_eval.spawn(
         model=final,
         out_name=f"{train_name}__eval",
         max_cases=max_cases,
         methods="attention_sum,rollout,unsquashed",
-    )
+    ).get()
     base_summary = base_eval.get()
 
     _print_summary(base_summary, f"Frozen {model}")
