@@ -47,6 +47,7 @@ image = (
     .pip_install(
         "torch>=2.1",
         "transformers>=4.44",
+        "accelerate>=0.30",
         "datasets>=2.19",
         "tokenizers>=0.19",
         "tqdm",
@@ -122,8 +123,11 @@ def run_train(
     steps: int = 5000,
     prior_warmup_steps: int = 1000,
     seq_len: int = 1024,
-    batch_size: int = 8,
-    grad_accum: int = 4,
+    # Eager attention (needed for the 4D prior mask) materializes full
+    # per-layer attention matrices, so batch 8 OOMs a 24GB A10G at seq 1024;
+    # batch 4 x accum 8 keeps the same effective batch within memory.
+    batch_size: int = 4,
+    grad_accum: int = 8,
     lr: float = 3e-5,
     lr_warmup_steps: int = 100,
     dataset: str = "HuggingFaceFW/fineweb-edu",
@@ -217,8 +221,8 @@ def retrofit(
     steps: int = 5000,
     prior_warmup_steps: int = 1000,
     seq_len: int = 1024,
-    batch_size: int = 8,
-    grad_accum: int = 4,
+    batch_size: int = 4,
+    grad_accum: int = 8,
     lr: float = 3e-5,
     dataset: str = "HuggingFaceFW/fineweb-edu",
     dataset_config: str = "sample-10BT",
