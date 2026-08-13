@@ -66,7 +66,13 @@ def _slug(model: str) -> str:
     return model.strip("/").replace("/", "__")
 
 
-@app.function(image=image, gpu=EVAL_GPU, timeout=6 * 60 * 60, volumes=VOLUMES)
+# Worker preemptions surface as cancelled inputs; retries restart the call.
+# run_eval resumes from results.jsonl on re-entry; run_train restarts fresh.
+RETRIES = modal.Retries(max_retries=3, initial_delay=10.0)
+
+
+@app.function(image=image, gpu=EVAL_GPU, timeout=6 * 60 * 60, volumes=VOLUMES,
+              retries=RETRIES)
 def run_eval(
     model: str,
     out_name: str,
@@ -116,7 +122,8 @@ def run_eval(
     return summary
 
 
-@app.function(image=image, gpu=TRAIN_GPU, timeout=24 * 60 * 60, volumes=VOLUMES)
+@app.function(image=image, gpu=TRAIN_GPU, timeout=24 * 60 * 60, volumes=VOLUMES,
+              retries=RETRIES)
 def run_train(
     model: str,
     out_name: str,
