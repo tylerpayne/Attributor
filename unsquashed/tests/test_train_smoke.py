@@ -76,3 +76,25 @@ def test_train_and_reload(tiny_model, tiny_tokenizer, tmp_path):
     with_prior = attributor.capture(ids)
     without = bare.capture(ids)
     assert not torch.allclose(with_prior[0], without[0])
+
+
+def test_packed_batches_identical_across_batching_and_prefetch(tiny_tokenizer, tmp_path):
+    """encode_docs/prefetch are throughput knobs only: the token stream must
+    be bit-identical to the naive one-doc-at-a-time path."""
+    import itertools
+
+    from unsquash.train.data import packed_batches
+
+    path = tmp_path / "docs.txt"
+    path.write_text("\n\n".join(f"document number {i} with some text" for i in range(40)))
+
+    def blocks(**kw):
+        gen = packed_batches(
+            tiny_tokenizer, seq_len=8, batch_size=2, text_file=str(path), **kw
+        )
+        return list(itertools.islice(gen, 12))
+
+    naive = blocks(encode_docs=1, prefetch=0)
+    fast = blocks(encode_docs=64, prefetch=4)
+    for a, b in zip(naive, fast):
+        assert (a == b).all()
