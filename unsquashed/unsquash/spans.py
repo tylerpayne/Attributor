@@ -74,11 +74,17 @@ def prepare_case(
             f"{type(tokenizer).__name__} is not fast."
         )
 
-    messages = [
-        {"role": "user", "content": context},
-        {"role": "assistant", "content": answer},
-    ]
-    full_text = tokenizer.apply_chat_template(messages, tokenize=False)
+    if getattr(tokenizer, "chat_template", None):
+        messages = [
+            {"role": "user", "content": context},
+            {"role": "assistant", "content": answer},
+        ]
+        full_text = tokenizer.apply_chat_template(messages, tokenize=False)
+    else:
+        # Base-LM checkpoints (e.g. from-scratch pretraining) have no chat
+        # template — and chat markup would be out-of-distribution for them
+        # anyway. Plain concatenation keeps the context verbatim at offset 0.
+        full_text = f"{context}\nAnswer: {answer}"
 
     # The chat template embeds the user content verbatim; locate it once and
     # shift the sentence spans recorded at context-construction time.

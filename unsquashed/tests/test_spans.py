@@ -92,3 +92,25 @@ def test_score_spans_reductions():
     assert mean_scores[0] > mean_scores[1]
     assert mean_scores[2] == 0.0
     assert mean_scores[3] == float("-inf")
+
+
+def test_prepare_case_without_chat_template(tiny_tokenizer):
+    """Base-LM tokenizers (no chat template) fall back to plain text."""
+    import copy
+
+    from unsquash.spans import prepare_case
+
+    tok = copy.deepcopy(tiny_tokenizer)
+    tok.chat_template = None
+    context = "The sky is blue. Grass is green."
+    prepared = prepare_case(
+        tok,
+        context=context,
+        answer="blue",
+        sentence_char_spans=[(0, 16), (17, 32)],
+    )
+    assert prepared.answer_span is not None
+    assert len(prepared.sentence_spans) == 2
+    assert all(s is not None for s in prepared.sentence_spans)
+    # the answer span must come from the appended answer, not "blue" in context
+    assert prepared.answer_span.start > prepared.sentence_spans[1].start
