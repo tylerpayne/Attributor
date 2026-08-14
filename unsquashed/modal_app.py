@@ -37,8 +37,10 @@ import os
 import modal
 
 DEFAULT_MODEL = "HuggingFaceTB/SmolLM-135M-Instruct"
+DEFAULT_PRETRAIN_CONFIG = "HuggingFaceTB/SmolLM2-135M"
 EVAL_GPU = os.environ.get("UNSQUASH_EVAL_GPU", "L4")
 TRAIN_GPU = os.environ.get("UNSQUASH_TRAIN_GPU", "A10G")
+PRETRAIN_GPU = os.environ.get("UNSQUASH_PRETRAIN_GPU", "H100")
 
 app = modal.App("unsquash")
 
@@ -53,6 +55,8 @@ image = (
         "tqdm",
         "hf-transfer",
     )
+    # torch.compile / triton need a host C compiler for kernel launcher stubs
+    .apt_install("build-essential")
     .env({"HF_HOME": "/cache/hf", "HF_HUB_ENABLE_HF_TRANSFER": "1"})
     .add_local_python_source("unsquash")
 )
@@ -171,6 +175,75 @@ def run_train(
     final = train(settings)
     results_volume.commit()
     return final
+
+
+@app.function(image=image, gpu=PRETRAIN_GPU, timeout=12 * 60 * 60, volumes=VOLUMES,
+              retries=RETRIES)
+def run_pretrain(
+    out_name: str,
+    model_config: str = DEFAULT_PRETRAIN_CONFIG,
+    tokens: float = 2.7e9,
+    seq_len: int = 2048,
+    batch_size: int = 32,
+    grad_accum: int = 2,
+    lr: float = 1e-3,
+    use_prior: bool = True,
+    prior_k: float = 0.0,
+    prior_lam: float = 1.0,
+    eval_every: int = 500,
+    save_every: int = 5000,
+    seed: int = 0,
+) -> str:
+    import logging
+
+    from unsquash.pretrain.runner import PretrainSettings, pretrain
+
+    logging.basicConfig(level=logging.INFO)
+
+    settings = PretrainSettings(
+        model_config=model_config,
+        out_dir=f"/results/pretrain/{out_name}",
+        tokens=tokens,
+        seq_len=seq_len,
+        batch_size=batch_size,
+        grad_accum=grad_accum,
+        lr=lr,
+        use_prior=use_prior,
+        prior_k=(prior_k if prior_k > 0 else None),
+        prior_lam=prior_lam,
+        eval_every=eval_every,
+        save_every=save_every,
+        seed=seed,
+    )
+    final = pretrain(settings)
+    results_volume.commit()
+    return final
+
+
+@app.local_entrypoint()
+def pretrain_from_scratch(
+    tokens: float = 2.7e9,
+    model_config: str = DEFAULT_PRETRAIN_CONFIG,
+    use_prior: bool = True,
+    out_name: str = "",
+):
+    """From-scratch SmolLM2-135M-shaped pretraining, prior on from step 0.
+
+    ``--no-use-prior`` runs the matched control (same data order and seed).
+    """
+    tag = "unsquashed" if use_prior else "control"
+    out_name = out_name or f"{_slug(model_config)}__scratch_{tag}"
+    call = run_pretrain.spawn(
+        out_name=out_name,
+        model_config=model_config,
+        tokens=tokens,
+        use_prior=use_prior,
+    )
+    print(f"Spawned pretraining (survives client death): {call.object_id}")
+    final = call.get()
+    print(f"\nFinal checkpoint (in the unsquash-results volume): {final}")
+    print("Evaluate it (prior auto-applied) with:")
+    print(f"  modal run modal_app.py::evaluate --model {final}")
 
 
 def _print_summary(summary: dict, title: str) -> None:
