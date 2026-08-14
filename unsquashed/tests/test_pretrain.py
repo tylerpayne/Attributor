@@ -1,16 +1,15 @@
-"""Parity tests for the FlexAttention pretraining model.
+"""Parity tests for the SDPA pretraining model.
 
-The load-bearing invariant: the flex path (score_mod prior) and the eager
-path (additive 4D bias) are the same function, and the HF export of a
-FlexLlama is the same function again under the eval harness's mask. If these
-hold at tiny scale in fp32 they hold at 135M, because every component is
-shape-generic.
+The load-bearing invariant: the SDPA path (additive-mask prior) and the eager
+path (materialized bias + softmax) are the same function, and the HF export
+of a PriorLlama is the same function again under the eval harness's mask. If
+these hold at tiny scale in fp32 they hold at 135M, because every component
+is shape-generic.
 """
 
-import pytest
 import torch
 
-from unsquash.pretrain.model import FlexLlama, ModelSpec
+from unsquash.pretrain.model import PriorLlama, ModelSpec
 from unsquash.prior import prior_attention_bias
 
 TINY = dict(
@@ -27,7 +26,7 @@ TINY = dict(
 
 def tiny_model(prior_k=2.0, seed=0):
     torch.manual_seed(seed)
-    return FlexLlama(ModelSpec(prior_k=prior_k, **TINY)).eval()
+    return PriorLlama(ModelSpec(prior_k=prior_k, **TINY)).eval()
 
 
 def tiny_ids(seed=1):
@@ -35,13 +34,13 @@ def tiny_ids(seed=1):
     return torch.randint(0, TINY["vocab_size"], (2, TINY["max_seq_len"]))
 
 
-def test_flex_matches_eager_bias_path():
+def test_sdpa_matches_eager_bias_path():
     model = tiny_model()
     ids = tiny_ids()
     with torch.no_grad():
-        flex_logits = model(ids)
+        sdpa_logits = model(ids)
     eager_logits = model.eager_logits(ids)
-    torch.testing.assert_close(flex_logits, eager_logits, atol=1e-4, rtol=1e-4)
+    torch.testing.assert_close(sdpa_logits, eager_logits, atol=1e-4, rtol=1e-4)
 
 
 def test_hf_export_matches_under_prior_mask():
@@ -102,12 +101,9 @@ def test_loss_decreases_on_overfit_batch():
     opt = torch.optim.AdamW(model.parameters(), lr=3e-3)
     first = None
     for _ in range(20):
-        try:
-            loss = model(ids, labels=ids)
-            opt.zero_grad()
-            loss.backward()
-        except NotImplementedError:
-            pytest.skip("flex_attention has no CPU backward; needs CUDA")
+        loss = model(ids, labels=ids)
+        opt.zero_grad()
+        loss.backward()
         opt.step()
         if first is None:
             first = float(loss)

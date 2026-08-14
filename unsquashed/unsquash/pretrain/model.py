@@ -1,11 +1,18 @@
-"""A minimal Llama (SmolLM2-shaped) with the unsquash prior fused into
-FlexAttention.
+"""A minimal Llama (SmolLM2-shaped) with the unsquash prior as an SDPA
+additive mask.
 
-The prior enters as a FlexAttention ``score_mod`` — ``score + lam *
-ln(c_{q-kv})`` — which compiles to a flash-class fused kernel, so from-scratch
-pretraining runs at full speed instead of eager attention's materialized
-[q, kv] matrices. Scores are accumulated in fp32 inside the kernel, which
-sidesteps bf16's ~lag-40 quantization of the log-coefficients.
+The prior is content-independent, so it enters training as one precomputed
+``[seq, seq]`` bias tensor (``lam * ln(c_{q-kv})`` below the diagonal, -inf
+above) handed to ``scaled_dot_product_attention`` — the masked memory-
+efficient kernel adds it tile-by-tile without materializing scores. On an
+H100 at 135M shapes this benchmarked at 4.1ms/layer fwd+bwd vs 25.5ms for
+FlexAttention with an equivalent ``score_mod`` (the in-kernel table gather is
+a ~12x kernel slowdown) and 2.1ms for plain causal, which the no-prior
+control uses via ``is_causal=True``.
+
+The mask is cast to the query dtype (SDPA requires it), so bf16 training
+quantizes adjacent-lag bias differences into plateaus past lag ~40 (<0.4%
+relative steps); evaluation always re-applies the exact fp32 prior.
 
 Module names deliberately mirror ``LlamaForCausalLM``'s ``model.*`` subtree
 (embed_tokens, layers.N.self_attn.q_proj, ...), so ``to_hf()`` is a pure
@@ -13,8 +20,8 @@ key-prefix rename and checkpoints saved through it load in the existing eval
 harness (eager attention + 4D prior mask) with no conversion.
 
 The eager path (``sink_mass``, and ``attention_probs`` in tests) recomputes
-attention with the equivalent additive bias; parity between the two paths is
-what tests/test_pretrain.py pins down.
+attention with the same additive bias; parity between the paths is what
+tests/test_pretrain.py pins down.
 """
 
 from __future__ import annotations
@@ -25,7 +32,6 @@ from dataclasses import dataclass
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.nn.attention.flex_attention import create_block_mask, flex_attention
 
 from unsquash.coefficients import log_unsquash_coefficients
 
@@ -105,10 +111,10 @@ class _Attention(nn.Module):
         k = k * cos + _rotate_half(k) * sin
         return q, k, v
 
-    def forward(self, x, cos, sin, block_mask, score_mod):
+    def forward(self, x, cos, sin, bias):
         q, k, v = self._qkv(x, cos, sin)
-        out = flex_attention(
-            q, k, v, score_mod=score_mod, block_mask=block_mask, enable_gqa=True
+        out = F.scaled_dot_product_attention(
+            q, k, v, attn_mask=bias, is_causal=bias is None, enable_gqa=True
         )
         b, s = x.shape[0], x.shape[1]
         return self.o_proj(out.transpose(1, 2).reshape(b, s, -1))
@@ -150,7 +156,7 @@ class _Block(nn.Module):
         )
 
 
-class FlexLlama(nn.Module):
+class PriorLlama(nn.Module):
     def __init__(self, spec: ModelSpec):
         super().__init__()
         self.spec = spec
@@ -176,7 +182,7 @@ class FlexLlama(nn.Module):
             logc = torch.zeros(spec.max_seq_len)
         self.register_buffer("logc", logc, persistent=False)
 
-        self._block_masks: dict = {}
+        self._bias_cache: dict = {}
         self.apply(self._init_weights)
 
     def _init_weights(self, module):
@@ -188,26 +194,15 @@ class FlexLlama(nn.Module):
 
     # -- attention plumbing ---------------------------------------------------
 
-    def _score_mod(self):
+    def _sdpa_bias(self, seq_len: int, device, dtype) -> torch.Tensor | None:
+        """The prior as a cached SDPA ``attn_mask`` in the query dtype, or
+        None (plain ``is_causal``) when the prior is disabled."""
         if self.spec.prior_k is None:
             return None
-        logc, lam = self.logc, self.spec.prior_lam
-
-        def score_mod(score, b, h, q_idx, kv_idx):
-            return score + lam * logc[torch.clamp(q_idx - kv_idx, min=0)]
-
-        return score_mod
-
-    def _block_mask(self, seq_len: int, device):
-        key = (seq_len, str(device))
-        if key not in self._block_masks:
-            def causal(b, h, q_idx, kv_idx):
-                return q_idx >= kv_idx
-
-            self._block_masks[key] = create_block_mask(
-                causal, B=None, H=None, Q_LEN=seq_len, KV_LEN=seq_len, device=device
-            )
-        return self._block_masks[key]
+        key = (seq_len, str(device), dtype)
+        if key not in self._bias_cache:
+            self._bias_cache[key] = self._bias(seq_len, device).to(dtype)
+        return self._bias_cache[key]
 
     def _bias(self, seq_len: int, device) -> torch.Tensor:
         """The eager-path equivalent of block_mask + score_mod: lam*ln(c) on
@@ -223,13 +218,17 @@ class FlexLlama(nn.Module):
         s = input_ids.shape[1]
         cos = self.rope_cos[None, None, :s]
         sin = self.rope_sin[None, None, :s]
-        block_mask = self._block_mask(s, input_ids.device)
-        score_mod = self._score_mod()
+        dtype = (
+            torch.get_autocast_dtype("cuda")
+            if torch.is_autocast_enabled("cuda")
+            else self.embed_tokens.weight.dtype
+        )
+        bias = self._sdpa_bias(s, input_ids.device, dtype)
 
         x = self.embed_tokens(input_ids)
         for layer in self.layers:
             x = x + layer.self_attn(
-                layer.input_layernorm(x), cos, sin, block_mask, score_mod
+                layer.input_layernorm(x), cos, sin, bias
             )
             x = x + layer.mlp(layer.post_attention_layernorm(x))
         x = self.norm(x)

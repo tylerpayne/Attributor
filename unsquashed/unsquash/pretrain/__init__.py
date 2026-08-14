@@ -1,4 +1,4 @@
-from unsquash.pretrain.model import FlexLlama, ModelSpec
+from unsquash.pretrain.model import PriorLlama, ModelSpec
 from unsquash.pretrain.runner import PretrainSettings, pretrain
 
-__all__ = ["FlexLlama", "ModelSpec", "PretrainSettings", "pretrain"]
+__all__ = ["PriorLlama", "ModelSpec", "PretrainSettings", "pretrain"]

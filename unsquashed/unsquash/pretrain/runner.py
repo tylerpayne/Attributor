@@ -4,7 +4,7 @@ The retrofit experiment showed a pretrained model defends its attention sink
 when the prior is annealed in. This runner tests the cleaner hypothesis: a
 model that has *never* trained without the prior shouldn't need to form sinks
 at all. The prior runs at full strength from the first step (no anneal), via
-the FlexAttention score_mod in ``unsquash.pretrain.model``.
+the SDPA additive mask in ``unsquash.pretrain.model``.
 
 Logging matches the retrofit trainer: train loss, held-out eval loss, and
 sink mass to ``train_log.jsonl``. Checkpoints export to HF format with the
@@ -25,7 +25,7 @@ from dataclasses import dataclass, asdict
 import torch
 
 from unsquash.prior import PriorConfig
-from unsquash.pretrain.model import FlexLlama, ModelSpec
+from unsquash.pretrain.model import PriorLlama, ModelSpec
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +97,7 @@ def pretrain(settings: PretrainSettings) -> str:
         settings.steps * settings.tokens_per_step / 1e9,
     )
 
-    model = FlexLlama(spec).to(device)
+    model = PriorLlama(spec).to(device)
     hf_config = AutoConfig.from_pretrained(settings.model_config)
     tokenizer = AutoTokenizer.from_pretrained(
         settings.model_config, trust_remote_code=settings.trust_remote_code
