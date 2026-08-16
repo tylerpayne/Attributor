@@ -59,10 +59,40 @@ def linear_anneal(step: int, warmup_steps: int) -> float:
 
 @dataclass
 class PriorConfig:
-    """The prior a checkpoint was trained with (and should be run with)."""
+    """The attention bias a checkpoint was trained with (and should be run
+    with). ``kind="unsquash"`` is the log-distance prior (``k``/``lam``);
+    ``kind="alibi"`` is the linear-distance control (``num_heads`` slopes,
+    ``k``/``lam`` unused). One sidecar file for both, so every consumer that
+    auto-applies ``unsquash_prior.json`` picks up either bias."""
 
     k: float
     lam: float = 1.0
+    kind: str = "unsquash"
+    num_heads: int = 0
+
+    def __post_init__(self):
+        if self.kind not in ("unsquash", "alibi"):
+            raise ValueError(f"Unknown bias kind: {self.kind!r}")
+        if self.kind == "alibi" and self.num_heads < 1:
+            raise ValueError("kind='alibi' requires num_heads >= 1")
+
+    def attention_bias(
+        self,
+        n: int,
+        *,
+        dtype: torch.dtype = torch.float32,
+        device: torch.device | str | None = None,
+    ) -> torch.Tensor:
+        """The recorded bias as a 4D float attention mask (causal included)."""
+        if self.kind == "alibi":
+            from unsquash.alibi import alibi_attention_bias
+
+            return alibi_attention_bias(
+                n, self.num_heads, dtype=dtype, device=device
+            )
+        return prior_attention_bias(
+            n, self.k, lam=self.lam, dtype=dtype, device=device
+        )
 
     def save(self, directory: str | os.PathLike) -> str:
         path = os.path.join(directory, PRIOR_FILENAME)
@@ -72,10 +102,15 @@ class PriorConfig:
 
     @classmethod
     def load(cls, directory: str | os.PathLike) -> "PriorConfig | None":
-        """Load the prior recorded next to a checkpoint, if any."""
+        """Load the bias recorded next to a checkpoint, if any."""
         path = os.path.join(str(directory), PRIOR_FILENAME)
         if not os.path.exists(path):
             return None
         with open(path) as fd:
             data = json.load(fd)
-        return cls(k=float(data["k"]), lam=float(data.get("lam", 1.0)))
+        return cls(
+            k=float(data["k"]),
+            lam=float(data.get("lam", 1.0)),
+            kind=str(data.get("kind", "unsquash")),
+            num_heads=int(data.get("num_heads", 0)),
+        )

@@ -22,6 +22,15 @@ harness (eager attention + 4D prior mask) with no conversion.
 The eager path (``sink_mass``, and ``attention_probs`` in tests) recomputes
 attention with the same additive bias; parity between the paths is what
 tests/test_pretrain.py pins down.
+
+Besides the prior, ``ModelSpec.alibi`` selects the ALiBi control — the same
+additive-mask machinery with the per-head linear bias from ``unsquash.alibi``
+(``[heads, s, s]`` instead of ``[s, s]``; SDPA broadcasts either). For
+long-context evaluation past the point where the ``[s, s]`` mask fits in
+memory, ``chunked_hidden`` runs the identical function with query-chunked
+attention and on-the-fly bias slices, and ``from_pretrained`` loads an
+exported checkpoint back into this implementation with its recorded bias and
+optionally longer RoPE/coefficient buffers.
 """
 
 from __future__ import annotations
@@ -33,6 +42,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from unsquash.alibi import alibi_slopes
 from unsquash.coefficients import log_unsquash_coefficients
 
 
@@ -52,6 +62,10 @@ class ModelSpec:
     # at build time when prior enabled.
     prior_k: float | None = 30.0
     prior_lam: float = 1.0
+    # ALiBi control: per-head linear-distance bias instead of the prior
+    # (mutually exclusive with prior_k; RoPE stays on either way, matching
+    # the prior run's RoPE + bias setup so the bias *shape* is the treatment).
+    alibi: bool = False
 
     @property
     def head_dim(self) -> int:
@@ -174,6 +188,8 @@ class PriorLlama(nn.Module):
         self.register_buffer("rope_cos", emb.cos(), persistent=False)
         self.register_buffer("rope_sin", emb.sin(), persistent=False)
 
+        if spec.alibi and spec.prior_k is not None:
+            raise ValueError("alibi and prior_k are mutually exclusive")
         if spec.prior_k is not None:
             logc = log_unsquash_coefficients(spec.max_seq_len, spec.prior_k).to(
                 torch.float32
@@ -181,6 +197,11 @@ class PriorLlama(nn.Module):
         else:
             logc = torch.zeros(spec.max_seq_len)
         self.register_buffer("logc", logc, persistent=False)
+        self.register_buffer(
+            "alibi_slopes",
+            alibi_slopes(spec.num_heads) if spec.alibi else torch.zeros(0),
+            persistent=False,
+        )
 
         self._bias_cache: dict = {}
         self.apply(self._init_weights)
@@ -195,9 +216,9 @@ class PriorLlama(nn.Module):
     # -- attention plumbing ---------------------------------------------------
 
     def _sdpa_bias(self, seq_len: int, device, dtype) -> torch.Tensor | None:
-        """The prior as a cached SDPA ``attn_mask`` in the query dtype, or
-        None (plain ``is_causal``) when the prior is disabled."""
-        if self.spec.prior_k is None:
+        """The bias as a cached SDPA ``attn_mask`` in the query dtype, or
+        None (plain ``is_causal``) when no bias is configured."""
+        if self.spec.prior_k is None and not self.spec.alibi:
             return None
         key = (seq_len, str(device), dtype)
         if key not in self._bias_cache:
@@ -205,11 +226,17 @@ class PriorLlama(nn.Module):
         return self._bias_cache[key]
 
     def _bias(self, seq_len: int, device) -> torch.Tensor:
-        """The eager-path equivalent of block_mask + score_mod: lam*ln(c) on
-        and below the diagonal, -inf above."""
+        """The eager-path equivalent of block_mask + score_mod. Prior:
+        ``lam*ln(c)`` on and below the diagonal, ``[s, s]`` (head-shared).
+        ALiBi: ``-m_h*(i-j)``, ``[heads, s, s]``. Both -inf above the
+        diagonal; either shape broadcasts against ``[b, heads, s, s]``."""
         idx = torch.arange(seq_len, device=device)
         m = idx[:, None] - idx[None, :]
-        bias = self.spec.prior_lam * self.logc[m.clamp(min=0)]
+        if self.spec.alibi:
+            slopes = self.alibi_slopes.to(device)
+            bias = -slopes[:, None, None] * m.clamp(min=0).to(torch.float32)
+        else:
+            bias = self.spec.prior_lam * self.logc[m.clamp(min=0)]
         return torch.where(m >= 0, bias, torch.tensor(float("-inf"), device=device))
 
     # -- forward paths --------------------------------------------------------
@@ -287,7 +314,142 @@ class PriorLlama(nn.Module):
             x = x + layer.mlp(layer.post_attention_layernorm(x))
         return total / max(1, count)
 
+    # -- long-context path ----------------------------------------------------
+
+    def _bias_slice(self, i0: int, i1: int, n: int, device) -> torch.Tensor:
+        """Bias rows ``i0..i1`` against all ``n`` keys, fp32
+        ``[1, heads_or_1, i1-i0, n]``, causal dtype-min included. The
+        on-the-fly analogue of ``_bias`` for sequences where the full
+        ``[n, n]`` mask would not fit in memory."""
+        qi = torch.arange(i0, i1, device=device)
+        kj = torch.arange(n, device=device)
+        m = qi[:, None] - kj[None, :]
+        if self.spec.alibi:
+            slopes = self.alibi_slopes.to(device)
+            bias = -slopes[:, None, None] * m.clamp(min=0).to(torch.float32)
+        elif self.spec.prior_k is not None:
+            bias = (self.spec.prior_lam * self.logc[m.clamp(min=0)])[None]
+        else:
+            bias = torch.zeros((1, i1 - i0, n), device=device)
+        neg = torch.tensor(torch.finfo(torch.float32).min, device=device)
+        return torch.where(m >= 0, bias, neg)[None]
+
+    @torch.no_grad()
+    def chunked_hidden(
+        self,
+        input_ids: torch.Tensor,
+        *,
+        q_chunk: int | None = None,
+        bias_budget: int = 2**27,
+    ) -> torch.Tensor:
+        """Final-norm hidden states ``[1, s, hidden]`` — ``forward`` minus the
+        LM head, with attention computed in query chunks and the bias slice
+        built on the fly. Peak bias memory is O(q_chunk * s) instead of the
+        O(s^2) of the materialized mask (17 GB fp32 at 64k), which is what
+        makes teacher-forced scoring at 64k-512k possible; callers project
+        only the rows they need through ``lm_head`` (full logits at 512k
+        would be ~100 GB).
+
+        ``bias_budget`` caps the per-chunk bias at ~``budget`` fp32 elements
+        (default 2^27 = 512 MB); the ALiBi bias is per-head so its chunks are
+        ``num_heads``-times shorter for the same budget.
+        """
+        if input_ids.dim() == 1:
+            input_ids = input_ids.unsqueeze(0)
+        if input_ids.shape[0] != 1:
+            raise ValueError("chunked_hidden supports batch size 1")
+        s = input_ids.shape[1]
+        if s > self.spec.max_seq_len:
+            raise ValueError(
+                f"sequence length {s} exceeds max_seq_len={self.spec.max_seq_len}; "
+                "reload with PriorLlama.from_pretrained(..., max_seq_len=...)"
+            )
+        heads_dim = self.spec.num_heads if self.spec.alibi else 1
+        if q_chunk is None:
+            q_chunk = min(s, max(16, bias_budget // max(1, heads_dim * s)))
+        device = input_ids.device
+        cos = self.rope_cos[None, None, :s]
+        sin = self.rope_sin[None, None, :s]
+
+        x = self.embed_tokens(input_ids)
+        for layer in self.layers:
+            q, k, v = layer.self_attn._qkv(layer.input_layernorm(x), cos, sin)
+            outs = []
+            for i0 in range(0, s, q_chunk):
+                i1 = min(s, i0 + q_chunk)
+                mask = self._bias_slice(i0, i1, s, device).to(q.dtype)
+                outs.append(
+                    F.scaled_dot_product_attention(
+                        q[:, :, i0:i1], k, v, attn_mask=mask, enable_gqa=True
+                    )
+                )
+            out = torch.cat(outs, dim=2)
+            x = x + layer.self_attn.o_proj(out.transpose(1, 2).reshape(1, s, -1))
+            x = x + layer.mlp(layer.post_attention_layernorm(x))
+        return self.norm(x)
+
+    def lm_head(self, hidden: torch.Tensor) -> torch.Tensor:
+        """Project (a slice of) final-norm hidden states to vocab logits."""
+        return F.linear(hidden, self.embed_tokens.weight)
+
     # -- export ---------------------------------------------------------------
+
+    @classmethod
+    def from_pretrained(
+        cls,
+        path: str,
+        *,
+        max_seq_len: int | None = None,
+        rope_theta: float | None = None,
+        device=None,
+    ) -> "PriorLlama":
+        """Load an HF checkpoint written by ``to_hf().save_pretrained`` back
+        into this implementation, with the bias recorded in
+        ``unsquash_prior.json`` (prior, alibi, or absent = plain causal)
+        applied automatically.
+
+        ``max_seq_len`` rebuilds the RoPE and log-coefficient buffers out to
+        an evaluation length past the training length; ``rope_theta``
+        overrides the checkpoint's theta (NTK-style position-interpolation
+        overlays at eval time).
+        """
+        from transformers import LlamaForCausalLM
+
+        from unsquash.prior import PriorConfig
+
+        spec = ModelSpec.from_hf(path)
+        cfg = PriorConfig.load(path)
+        if cfg is None:
+            spec.prior_k = None
+        elif cfg.kind == "alibi":
+            if cfg.num_heads != spec.num_heads:
+                raise ValueError(
+                    f"checkpoint alibi num_heads={cfg.num_heads} != "
+                    f"config num_heads={spec.num_heads}"
+                )
+            spec.prior_k, spec.alibi = None, True
+        else:
+            spec.prior_k, spec.prior_lam = cfg.k, cfg.lam
+        if max_seq_len is not None:
+            spec.max_seq_len = max_seq_len
+        if rope_theta is not None:
+            spec.rope_theta = rope_theta
+
+        hf = LlamaForCausalLM.from_pretrained(path)
+        model = cls(spec)
+        state = {
+            k[len("model.") :]: v
+            for k, v in hf.state_dict().items()
+            if k.startswith("model.")
+        }
+        incompatible = model.load_state_dict(state, strict=False)
+        missing = [k for k in incompatible.missing_keys]
+        if missing:
+            raise RuntimeError(f"from_pretrained mismatch: {missing=}")
+        del hf
+        if device is not None:
+            model = model.to(device)
+        return model.eval()
 
     def to_hf(self, hf_config=None):
         """An equivalent ``LlamaForCausalLM`` (for save_pretrained; loads in

@@ -28,7 +28,7 @@ import torch
 
 from unsquash.coefficients import unsquash_factor
 from unsquash.heads import o_proj_head_weights, uniform_head_weights
-from unsquash.prior import PriorConfig, prior_attention_bias
+from unsquash.prior import PriorConfig
 
 METHODS = ("attention_sum", "rollout", "unsquashed")
 
@@ -99,10 +99,11 @@ class RolloutAttributor:
 
         attention_mask = None
         if self.prior is not None:
-            attention_mask = prior_attention_bias(
+            # Dispatches on the recorded kind: unsquash log-distance prior or
+            # the ALiBi linear-distance control, either way applied during
+            # capture so attribution sees the model's real distributions.
+            attention_mask = self.prior.attention_bias(
                 input_ids.shape[1],
-                self.prior.k,
-                lam=self.prior.lam,
                 dtype=self.model.dtype,
                 device=self.model.device,
             )

@@ -19,6 +19,12 @@ Run from this directory (``unsquashed/``):
     # Or the whole thing: base eval + retrofit in parallel, then checkpoint eval
     modal run --detach modal_app.py::pipeline
 
+    # Experiment 3: from-scratch pretraining arms (prior / alibi / none)
+    modal run --detach modal_app.py::pretrain_from_scratch --attn-bias alibi
+
+    # Long-context ladder (ppl, passkey, kv, copy + extreme lengths)
+    modal run --detach modal_app.py::ladder --models /results/pretrain/<run>/final
+
 Artifacts (results.jsonl, summary.json, checkpoints, train_log.jsonl) persist
 in the ``unsquash-results`` volume:
 
@@ -187,7 +193,7 @@ def run_pretrain(
     batch_size: int = 32,
     grad_accum: int = 2,
     lr: float = 1e-3,
-    use_prior: bool = True,
+    attn_bias: str = "prior",  # "prior" | "alibi" | "none"
     prior_k: float = 0.0,
     prior_lam: float = 1.0,
     eval_every: int = 500,
@@ -208,7 +214,7 @@ def run_pretrain(
         batch_size=batch_size,
         grad_accum=grad_accum,
         lr=lr,
-        use_prior=use_prior,
+        attn_bias=attn_bias,
         prior_k=(prior_k if prior_k > 0 else None),
         prior_lam=prior_lam,
         eval_every=eval_every,
@@ -220,29 +226,122 @@ def run_pretrain(
     return final
 
 
+@app.function(image=image, gpu=PRETRAIN_GPU, timeout=12 * 60 * 60, volumes=VOLUMES,
+              retries=RETRIES)
+def run_ladder(
+    model: str,
+    out_name: str,
+    tiers: str = "ppl,passkey,kv,copy",
+    lengths: str = "2048,4096,8192,16384,32768",
+    depths: str = "0.0,0.25,0.5,0.75,1.0",
+    extreme_lengths: str = "65536,131072,262144",
+    cases_per_cell: int = 5,
+    extreme_cases_per_cell: int = 2,
+    ppl_blocks: int = 4,
+    rope_theta_scale: float = 1.0,
+    seed: int = 0,
+) -> dict:
+    import logging
+
+    from unsquash.ladder.runner import LadderSettings, run_ladder as _run
+
+    logging.basicConfig(level=logging.INFO)
+
+    settings = LadderSettings(
+        model=model,
+        out_dir=f"/results/ladder/{out_name}",
+        tiers=tuple(t.strip() for t in tiers.split(",") if t.strip()),
+        lengths=tuple(int(n) for n in lengths.split(",") if n.strip()),
+        depths=tuple(float(d) for d in depths.split(",") if d.strip()),
+        extreme_lengths=tuple(
+            int(n) for n in extreme_lengths.split(",") if n.strip() and int(n) > 0
+        ),
+        cases_per_cell=cases_per_cell,
+        extreme_cases_per_cell=extreme_cases_per_cell,
+        ppl_blocks=ppl_blocks,
+        rope_theta_scale=rope_theta_scale,
+        seed=seed,
+        extra={"model": model},
+    )
+    summary = _run(settings)
+    results_volume.commit()
+    return summary
+
+
+@app.local_entrypoint()
+def ladder(
+    models: str,
+    tiers: str = "ppl,passkey,kv,copy",
+    lengths: str = "2048,4096,8192,16384,32768",
+    depths: str = "0.0,0.25,0.5,0.75,1.0",
+    extreme_lengths: str = "65536,131072,262144",
+    cases_per_cell: int = 5,
+    rope_theta_scale: float = 1.0,
+    out_suffix: str = "",
+):
+    """The long-context ladder over one or more checkpoints (comma-separated
+    volume paths), one detached GPU job per model. Results land in
+    ``ladder/<checkpoint-slug><suffix>/`` in the unsquash-results volume.
+
+    Example (all three arms, native RoPE):
+
+        modal run --detach modal_app.py::ladder --models \\
+            /results/pretrain/A__scratch_unsquashed/final,\\
+            /results/pretrain/A__scratch_control/final,\\
+            /results/pretrain/A__scratch_alibi/final
+    """
+    calls = []
+    for model in (m.strip() for m in models.split(",") if m.strip()):
+        out_name = _slug(model.removeprefix("/results/pretrain/")) + out_suffix
+        call = run_ladder.spawn(
+            model=model,
+            out_name=out_name,
+            tiers=tiers,
+            lengths=lengths,
+            depths=depths,
+            extreme_lengths=extreme_lengths,
+            cases_per_cell=cases_per_cell,
+            rope_theta_scale=rope_theta_scale,
+        )
+        calls.append((model, out_name, call))
+        print(f"Spawned ladder for {model}: {call.object_id}")
+    for model, out_name, call in calls:
+        summary = call.get()
+        eff = summary.get("effective_context_length", {})
+        print(f"\n=== {model} ===")
+        print(f"effective context length by tier: {eff}")
+        print(f"  modal volume get unsquash-results ladder/{out_name}/summary.json .")
+
+
+PRETRAIN_TAGS = {"prior": "unsquashed", "alibi": "alibi", "none": "control"}
+
+
 @app.local_entrypoint()
 def pretrain_from_scratch(
     tokens: float = 2.7e9,
     model_config: str = DEFAULT_PRETRAIN_CONFIG,
-    use_prior: bool = True,
+    attn_bias: str = "prior",
     out_name: str = "",
 ):
-    """From-scratch SmolLM2-135M-shaped pretraining, prior on from step 0.
+    """From-scratch SmolLM2-135M-shaped pretraining, bias on from step 0.
 
-    ``--no-use-prior`` runs the matched control (same data order and seed).
+    ``--attn-bias`` selects the arm: ``prior`` (unsquash log-distance),
+    ``alibi`` (linear-distance control), or ``none`` (plain causal control) —
+    all three on the same data order and init seed.
     """
-    tag = "unsquashed" if use_prior else "control"
-    out_name = out_name or f"{_slug(model_config)}__scratch_{tag}"
+    if attn_bias not in PRETRAIN_TAGS:
+        raise SystemExit(f"--attn-bias must be one of {sorted(PRETRAIN_TAGS)}")
+    out_name = out_name or f"{_slug(model_config)}__scratch_{PRETRAIN_TAGS[attn_bias]}"
     call = run_pretrain.spawn(
         out_name=out_name,
         model_config=model_config,
         tokens=tokens,
-        use_prior=use_prior,
+        attn_bias=attn_bias,
     )
     print(f"Spawned pretraining (survives client death): {call.object_id}")
     final = call.get()
     print(f"\nFinal checkpoint (in the unsquash-results volume): {final}")
-    print("Evaluate it (prior auto-applied) with:")
+    print("Evaluate it (bias auto-applied) with:")
     print(f"  modal run modal_app.py::evaluate --model {final}")
 
 

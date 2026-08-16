@@ -8,9 +8,10 @@ the SDPA additive mask in ``unsquash.pretrain.model``.
 
 Logging matches the retrofit trainer: train loss, held-out eval loss, and
 sink mass to ``train_log.jsonl``. Checkpoints export to HF format with the
-prior recorded in ``unsquash_prior.json``, so ``unsquash.eval`` runs on them
-unchanged. Set ``use_prior=False`` for the matched no-prior control (identical
-data order and init seed).
+bias recorded in ``unsquash_prior.json``, so ``unsquash.eval`` runs on them
+unchanged. ``attn_bias`` selects the arm: "prior" (unsquash), "alibi"
+(linear-distance control), or "none" (plain causal control) — all three on
+identical data order and init seed.
 """
 
 from __future__ import annotations
@@ -54,9 +55,10 @@ class PretrainSettings:
     compile: bool = True
     device: str | None = None
     seed: int = 0
-    # prior
-    use_prior: bool = True
-    prior_k: float | None = None  # default: num_layers
+    # attention bias: "prior" (unsquash log-distance), "alibi" (linear-
+    # distance control), or "none" (plain causal control)
+    attn_bias: str = "prior"
+    prior_k: float | None = None  # default: num_layers (attn_bias="prior")
     prior_lam: float = 1.0
     # bookkeeping
     log_every: int = 20
@@ -83,16 +85,19 @@ def pretrain(settings: PretrainSettings) -> str:
     torch.manual_seed(settings.seed)
     device = settings.device or ("cuda" if torch.cuda.is_available() else "cpu")
 
+    if settings.attn_bias not in ("prior", "alibi", "none"):
+        raise ValueError(f"Unknown attn_bias: {settings.attn_bias!r}")
     spec = ModelSpec.from_hf(settings.model_config, max_seq_len=settings.seq_len)
-    if settings.use_prior:
+    spec.prior_k = None
+    if settings.attn_bias == "prior":
         spec.prior_k = settings.prior_k or float(spec.num_layers)
         spec.prior_lam = settings.prior_lam
-    else:
-        spec.prior_k = None
+    spec.alibi = settings.attn_bias == "alibi"
 
     logger.info(
-        "From-scratch %s: %d layers, prior_k=%s, %d steps of %d tokens (%.2fB total)",
-        settings.model_config, spec.num_layers, spec.prior_k,
+        "From-scratch %s: %d layers, attn_bias=%s (prior_k=%s), "
+        "%d steps of %d tokens (%.2fB total)",
+        settings.model_config, spec.num_layers, settings.attn_bias, spec.prior_k,
         settings.steps, settings.tokens_per_step,
         settings.steps * settings.tokens_per_step / 1e9,
     )
@@ -150,8 +155,14 @@ def pretrain(settings: PretrainSettings) -> str:
         path = os.path.join(settings.out_dir, name)
         model.to_hf(hf_config).save_pretrained(path)
         tokenizer.save_pretrained(path)
-        if settings.use_prior:
+        # Record the training-time bias so eval/attribution re-applies it
+        # ("auto" consumers read this sidecar; absent = plain causal).
+        if settings.attn_bias == "prior":
             PriorConfig(k=spec.prior_k, lam=spec.prior_lam).save(path)
+        elif settings.attn_bias == "alibi":
+            PriorConfig(
+                k=0.0, kind="alibi", num_heads=spec.num_heads
+            ).save(path)
         logger.info("Saved checkpoint %s", path)
         return path
 
