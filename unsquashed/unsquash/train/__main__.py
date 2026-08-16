@@ -23,7 +23,7 @@ def get_args():
             parser.add_argument(f"--{f.name}", action="store_true")
         else:
             arg_type = type(default) if default is not None else str
-            if f.name in ("prior_k",):
+            if f.name in ("unsquashed_k",):
                 arg_type = float
             parser.add_argument(f"--{f.name}", type=arg_type, default=default)
     return parser.parse_args()

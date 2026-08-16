@@ -40,7 +40,7 @@ Two pieces, designed in the session that produced this branch:
 ### 1. The ALiBi pretraining run (~same cost as the prior run, 1–2 H100-hr)
 
 ```bash
-modal run --detach modal_app.py::pretrain_from_scratch --attn-bias alibi
+modal run --detach modal_app.py::pretrain_from_scratch --prior alibi
 ```
 
 Checkpoint lands in
@@ -116,10 +116,10 @@ knowing before scaling anything up.
 ## What changed in the code
 
 - `unsquash/alibi.py` — slopes (paper recipe incl. non-power-of-2) and the
-  `[1, H, n, n]` bias; same 4D-mask contract as `prior_attention_bias`.
-- `unsquash/prior.py` — `PriorConfig` gained `kind` ("unsquash"/"alibi"),
+  `[1, H, n, n]` bias; same 4D-mask contract as `unsquashed_attention_bias`.
+- `unsquash/prior.py` — `PriorConfig` gained `kind` ("unsquashed"/"alibi"),
   `num_heads`, and `attention_bias()` dispatch. Old sidecar files load
-  unchanged (kind defaults to "unsquash").
+  unchanged (kind defaults to "unsquashed").
 - `unsquash/rollout.py` — capture applies the recorded bias via that
   dispatch.
 - `unsquash/pretrain/model.py` — `ModelSpec.alibi`; `_bias`/`_sdpa_bias`
@@ -127,13 +127,18 @@ knowing before scaling anything up.
   path); `from_pretrained` (checkpoint → this implementation, bias
   auto-applied, `max_seq_len`/`rope_theta` overridable at load).
 - `unsquash/pretrain/runner.py` — `use_prior: bool` became
-  `attn_bias: "prior" | "alibi" | "none"`; sidecar written for both biased
+  `prior: "unsquashed" | "alibi" | "none"`; sidecar written for both biased
   arms. (Breaking rename: old scripts passing `use_prior` need
-  `attn_bias="prior"/"none"`.)
+  `prior="unsquashed"/"none"`.)
+- Naming convention: "prior" is the generic concept (`PriorConfig`,
+  `PriorLlama`, `prior="auto"`); everything specific to the log-distance
+  bias says "unsquashed" (`unsquashed_k`, `unsquashed_lam`,
+  `unsquashed_attention_bias`, `--unsquashed-k`). You choose the alibi
+  prior or the unsquashed prior.
 - `unsquash/ladder/` — tasks (`passkey`, `kv`, `copy`; string-seeded so
   every model scores bit-identical cases), runner (resumable results.jsonl,
   summary with effective context length), CLI.
-- `modal_app.py` — `pretrain_from_scratch --attn-bias`, new
+- `modal_app.py` — `pretrain_from_scratch --prior`, new
   `run_ladder`/`ladder` entrypoints.
 - Tests: `tests/test_alibi.py`, `tests/test_ladder.py` (chunked-vs-full
   parity is the load-bearing one: every long-context number flows through

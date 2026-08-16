@@ -60,10 +60,10 @@ class ModelSpec:
     max_seq_len: int = 2048
     # None disables the prior (the no-prior control); k defaults to num_layers
     # at build time when prior enabled.
-    prior_k: float | None = 30.0
-    prior_lam: float = 1.0
+    unsquashed_k: float | None = 30.0
+    unsquashed_lam: float = 1.0
     # ALiBi control: per-head linear-distance bias instead of the prior
-    # (mutually exclusive with prior_k; RoPE stays on either way, matching
+    # (mutually exclusive with unsquashed_k; RoPE stays on either way, matching
     # the prior run's RoPE + bias setup so the bias *shape* is the treatment).
     alibi: bool = False
 
@@ -188,10 +188,10 @@ class PriorLlama(nn.Module):
         self.register_buffer("rope_cos", emb.cos(), persistent=False)
         self.register_buffer("rope_sin", emb.sin(), persistent=False)
 
-        if spec.alibi and spec.prior_k is not None:
-            raise ValueError("alibi and prior_k are mutually exclusive")
-        if spec.prior_k is not None:
-            logc = log_unsquash_coefficients(spec.max_seq_len, spec.prior_k).to(
+        if spec.alibi and spec.unsquashed_k is not None:
+            raise ValueError("alibi and unsquashed_k are mutually exclusive")
+        if spec.unsquashed_k is not None:
+            logc = log_unsquash_coefficients(spec.max_seq_len, spec.unsquashed_k).to(
                 torch.float32
             )
         else:
@@ -218,7 +218,7 @@ class PriorLlama(nn.Module):
     def _sdpa_bias(self, seq_len: int, device, dtype) -> torch.Tensor | None:
         """The bias as a cached SDPA ``attn_mask`` in the query dtype, or
         None (plain ``is_causal``) when no bias is configured."""
-        if self.spec.prior_k is None and not self.spec.alibi:
+        if self.spec.unsquashed_k is None and not self.spec.alibi:
             return None
         key = (seq_len, str(device), dtype)
         if key not in self._bias_cache:
@@ -236,7 +236,7 @@ class PriorLlama(nn.Module):
             slopes = self.alibi_slopes.to(device)
             bias = -slopes[:, None, None] * m.clamp(min=0).to(torch.float32)
         else:
-            bias = self.spec.prior_lam * self.logc[m.clamp(min=0)]
+            bias = self.spec.unsquashed_lam * self.logc[m.clamp(min=0)]
         return torch.where(m >= 0, bias, torch.tensor(float("-inf"), device=device))
 
     # -- forward paths --------------------------------------------------------
@@ -327,8 +327,8 @@ class PriorLlama(nn.Module):
         if self.spec.alibi:
             slopes = self.alibi_slopes.to(device)
             bias = -slopes[:, None, None] * m.clamp(min=0).to(torch.float32)
-        elif self.spec.prior_k is not None:
-            bias = (self.spec.prior_lam * self.logc[m.clamp(min=0)])[None]
+        elif self.spec.unsquashed_k is not None:
+            bias = (self.spec.unsquashed_lam * self.logc[m.clamp(min=0)])[None]
         else:
             bias = torch.zeros((1, i1 - i0, n), device=device)
         neg = torch.tensor(torch.finfo(torch.float32).min, device=device)
@@ -420,16 +420,16 @@ class PriorLlama(nn.Module):
         spec = ModelSpec.from_hf(path)
         cfg = PriorConfig.load(path)
         if cfg is None:
-            spec.prior_k = None
+            spec.unsquashed_k = None
         elif cfg.kind == "alibi":
             if cfg.num_heads != spec.num_heads:
                 raise ValueError(
                     f"checkpoint alibi num_heads={cfg.num_heads} != "
                     f"config num_heads={spec.num_heads}"
                 )
-            spec.prior_k, spec.alibi = None, True
+            spec.unsquashed_k, spec.alibi = None, True
         else:
-            spec.prior_k, spec.prior_lam = cfg.k, cfg.lam
+            spec.unsquashed_k, spec.unsquashed_lam = cfg.k, cfg.lam
         if max_seq_len is not None:
             spec.max_seq_len = max_seq_len
         if rope_theta is not None:

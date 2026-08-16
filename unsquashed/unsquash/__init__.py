@@ -15,7 +15,7 @@ from unsquash.coefficients import (
     unsquash_coefficients,
     unsquash_factor,
 )
-from unsquash.prior import PriorConfig, prior_attention_bias
+from unsquash.prior import PriorConfig, unsquashed_attention_bias
 from unsquash.rollout import METHODS, RolloutAttributor
 
 __all__ = [
@@ -25,7 +25,7 @@ __all__ = [
     "alibi_attention_bias",
     "alibi_slopes",
     "log_unsquash_coefficients",
-    "prior_attention_bias",
+    "unsquashed_attention_bias",
     "unsquash_coefficients",
     "unsquash_factor",
 ]

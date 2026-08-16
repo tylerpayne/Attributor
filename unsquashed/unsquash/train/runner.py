@@ -22,7 +22,7 @@ from dataclasses import dataclass, asdict
 
 import torch
 
-from unsquash.prior import PriorConfig, linear_anneal, prior_attention_bias
+from unsquash.prior import PriorConfig, linear_anneal, unsquashed_attention_bias
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +51,7 @@ class TrainSettings:
     device: str | None = None
     seed: int = 0
     # prior
-    prior_k: float | None = None  # default: num_hidden_layers
+    unsquashed_k: float | None = None  # default: num_hidden_layers
     prior_warmup_steps: int = 500
     # bookkeeping
     log_every: int = 10
@@ -66,7 +66,7 @@ class PriorMask:
     single fused multiply-add, not a recompute."""
 
     def __init__(self, seq_len: int, k: float, dtype: torch.dtype, device):
-        full = prior_attention_bias(seq_len, k, lam=1.0, dtype=torch.float32,
+        full = unsquashed_attention_bias(seq_len, k, lam=1.0, dtype=torch.float32,
                                     device=device)
         idx = torch.arange(seq_len, device=device)
         causal = idx[:, None] >= idx[None, :]
@@ -130,7 +130,7 @@ def train(settings: TrainSettings) -> str:
         settings.model, trust_remote_code=settings.trust_remote_code
     )
 
-    k = settings.prior_k or float(model.config.num_hidden_layers)
+    k = settings.unsquashed_k or float(model.config.num_hidden_layers)
     prior_mask = PriorMask(settings.seq_len, k, dtype, device)
     logger.info("Prior: k=%s, warmup=%d steps", k, settings.prior_warmup_steps)
 

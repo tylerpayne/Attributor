@@ -19,8 +19,8 @@ Run from this directory (``unsquashed/``):
     # Or the whole thing: base eval + retrofit in parallel, then checkpoint eval
     modal run --detach modal_app.py::pipeline
 
-    # Experiment 3: from-scratch pretraining arms (prior / alibi / none)
-    modal run --detach modal_app.py::pretrain_from_scratch --attn-bias alibi
+    # Experiment 3: from-scratch pretraining arms (unsquashed / alibi / none)
+    modal run --detach modal_app.py::pretrain_from_scratch --prior alibi
 
     # Long-context ladder (ppl, passkey, kv, copy + extreme lengths)
     modal run --detach modal_app.py::ladder --models /results/pretrain/<run>/final
@@ -92,8 +92,8 @@ def run_eval(
     reduction: str = "mean",
     max_context_tokens: int = 2000,
     head_weighting: str = "o_proj_norm",
-    prior_k: float = 0.0,
-    prior_lambda: float = 1.0,
+    unsquashed_k: float = 0.0,
+    unsquashed_lambda: float = 1.0,
     no_prior: bool = False,
 ) -> dict:
     import logging
@@ -106,8 +106,8 @@ def run_eval(
 
     if no_prior:
         prior = None
-    elif prior_k > 0:
-        prior = PriorConfig(k=prior_k, lam=prior_lambda)
+    elif unsquashed_k > 0:
+        prior = PriorConfig(k=unsquashed_k, lam=unsquashed_lambda)
     else:
         prior = "auto"  # applies a checkpoint's recorded unsquash_prior.json
 
@@ -149,7 +149,7 @@ def run_train(
     lr_warmup_steps: int = 100,
     dataset: str = "HuggingFaceFW/fineweb-edu",
     dataset_config: str = "sample-10BT",
-    prior_k: float = 0.0,
+    unsquashed_k: float = 0.0,
     eval_every: int = 200,
     save_every: int = 1000,
     seed: int = 0,
@@ -172,7 +172,7 @@ def run_train(
         lr_warmup_steps=lr_warmup_steps,
         dataset=dataset,
         dataset_config=dataset_config or None,
-        prior_k=prior_k if prior_k > 0 else None,
+        unsquashed_k=unsquashed_k if unsquashed_k > 0 else None,
         eval_every=eval_every,
         save_every=save_every,
         seed=seed,
@@ -193,9 +193,9 @@ def run_pretrain(
     batch_size: int = 32,
     grad_accum: int = 2,
     lr: float = 1e-3,
-    attn_bias: str = "prior",  # "prior" | "alibi" | "none"
-    prior_k: float = 0.0,
-    prior_lam: float = 1.0,
+    prior: str = "unsquashed",  # "unsquashed" | "alibi" | "none"
+    unsquashed_k: float = 0.0,
+    unsquashed_lam: float = 1.0,
     eval_every: int = 500,
     save_every: int = 5000,
     seed: int = 0,
@@ -214,9 +214,9 @@ def run_pretrain(
         batch_size=batch_size,
         grad_accum=grad_accum,
         lr=lr,
-        attn_bias=attn_bias,
-        prior_k=(prior_k if prior_k > 0 else None),
-        prior_lam=prior_lam,
+        prior=prior,
+        unsquashed_k=(unsquashed_k if unsquashed_k > 0 else None),
+        unsquashed_lam=unsquashed_lam,
         eval_every=eval_every,
         save_every=save_every,
         seed=seed,
@@ -313,30 +313,30 @@ def ladder(
         print(f"  modal volume get unsquash-results ladder/{out_name}/summary.json .")
 
 
-PRETRAIN_TAGS = {"prior": "unsquashed", "alibi": "alibi", "none": "control"}
+PRETRAIN_TAGS = {"unsquashed": "unsquashed", "alibi": "alibi", "none": "control"}
 
 
 @app.local_entrypoint()
 def pretrain_from_scratch(
     tokens: float = 2.7e9,
     model_config: str = DEFAULT_PRETRAIN_CONFIG,
-    attn_bias: str = "prior",
+    prior: str = "unsquashed",
     out_name: str = "",
 ):
-    """From-scratch SmolLM2-135M-shaped pretraining, bias on from step 0.
+    """From-scratch SmolLM2-135M-shaped pretraining, prior on from step 0.
 
-    ``--attn-bias`` selects the arm: ``prior`` (unsquash log-distance),
-    ``alibi`` (linear-distance control), or ``none`` (plain causal control) —
+    ``--prior`` selects the arm: ``unsquashed`` (log-distance prior),
+    ``alibi`` (linear-distance prior), or ``none`` (plain causal control) —
     all three on the same data order and init seed.
     """
-    if attn_bias not in PRETRAIN_TAGS:
-        raise SystemExit(f"--attn-bias must be one of {sorted(PRETRAIN_TAGS)}")
-    out_name = out_name or f"{_slug(model_config)}__scratch_{PRETRAIN_TAGS[attn_bias]}"
+    if prior not in PRETRAIN_TAGS:
+        raise SystemExit(f"--prior must be one of {sorted(PRETRAIN_TAGS)}")
+    out_name = out_name or f"{_slug(model_config)}__scratch_{PRETRAIN_TAGS[prior]}"
     call = run_pretrain.spawn(
         out_name=out_name,
         model_config=model_config,
         tokens=tokens,
-        attn_bias=attn_bias,
+        prior=prior,
     )
     print(f"Spawned pretraining (survives client death): {call.object_id}")
     final = call.get()
@@ -370,8 +370,8 @@ def evaluate(
     reduction: str = "mean",
     max_context_tokens: int = 2000,
     head_weighting: str = "o_proj_norm",
-    prior_k: float = 0.0,
-    prior_lambda: float = 1.0,
+    unsquashed_k: float = 0.0,
+    unsquashed_lambda: float = 1.0,
     no_prior: bool = False,
     out_name: str = "",
 ):
@@ -386,8 +386,8 @@ def evaluate(
         reduction=reduction,
         max_context_tokens=max_context_tokens,
         head_weighting=head_weighting,
-        prior_k=prior_k,
-        prior_lambda=prior_lambda,
+        unsquashed_k=unsquashed_k,
+        unsquashed_lambda=unsquashed_lambda,
         no_prior=no_prior,
     )
     _print_summary(summary, f"{model} ({split})")
@@ -405,7 +405,7 @@ def retrofit(
     lr: float = 3e-5,
     dataset: str = "HuggingFaceFW/fineweb-edu",
     dataset_config: str = "sample-10BT",
-    prior_k: float = 0.0,
+    unsquashed_k: float = 0.0,
     out_name: str = "",
 ):
     """Experiment 2: continued pretraining with the annealed prior."""
@@ -423,7 +423,7 @@ def retrofit(
         lr=lr,
         dataset=dataset,
         dataset_config=dataset_config,
-        prior_k=prior_k,
+        unsquashed_k=unsquashed_k,
     )
     print(f"Spawned training (survives client death): {call.object_id}")
     final = call.get()

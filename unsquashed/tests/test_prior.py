@@ -1,13 +1,13 @@
 import torch
 
 from unsquash.coefficients import unsquash_coefficients
-from unsquash.prior import PriorConfig, linear_anneal, prior_attention_bias
+from unsquash.prior import PriorConfig, linear_anneal, unsquashed_attention_bias
 
 
 def test_softmax_of_bias_reproduces_coefficients():
     """A head with flat logits + the prior should attend proportionally to c_m."""
     n, k = 32, 8
-    bias = prior_attention_bias(n, k, dtype=torch.float32)[0, 0]
+    bias = unsquashed_attention_bias(n, k, dtype=torch.float32)[0, 0]
     probs = torch.softmax(bias.to(torch.float64), dim=-1)
 
     c = unsquash_coefficients(n, k)
@@ -18,22 +18,22 @@ def test_softmax_of_bias_reproduces_coefficients():
 
 def test_bias_is_causal():
     n = 16
-    bias = prior_attention_bias(n, 4, dtype=torch.float32)[0, 0]
+    bias = unsquashed_attention_bias(n, 4, dtype=torch.float32)[0, 0]
     probs = torch.softmax(bias, dim=-1)
     assert torch.all(torch.triu(probs, diagonal=1) < 1e-8)
 
 
 def test_lambda_scales_bias():
     n, k = 16, 4
-    half = prior_attention_bias(n, k, lam=0.5)[0, 0]
-    full = prior_attention_bias(n, k, lam=1.0)[0, 0]
+    half = unsquashed_attention_bias(n, k, lam=0.5)[0, 0]
+    full = unsquashed_attention_bias(n, k, lam=1.0)[0, 0]
     tril = torch.tril_indices(n, n)
     assert torch.allclose(half[tril[0], tril[1]] * 2, full[tril[0], tril[1]],
                           rtol=1e-5)
 
 
 def test_lambda_zero_is_plain_causal_mask():
-    bias = prior_attention_bias(8, 4, lam=0.0)[0, 0]
+    bias = unsquashed_attention_bias(8, 4, lam=0.0)[0, 0]
     assert torch.all(torch.tril(bias) == 0)
 
 

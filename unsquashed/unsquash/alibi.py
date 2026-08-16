@@ -62,7 +62,7 @@ def alibi_attention_bias(
     """``[1, num_heads, n, n]`` additive attention bias: ``-m_h * (i - j)`` on
     and below the diagonal, dtype-min above it (causal masking included).
 
-    The per-head analogue of ``unsquash.prior.prior_attention_bias``; the
+    The per-head analogue of ``unsquash.prior.unsquashed_attention_bias``; the
     same 4D-float-mask contract, so it drops into SDPA, the HF eager path,
     and rollout capture unchanged.
     """

@@ -38,7 +38,7 @@ def tiny_ids(n=64, seed=1):
 def test_chunked_hidden_matches_forward(kind, q_chunk):
     torch.manual_seed(0)
     spec = ModelSpec(
-        prior_k=2.0 if kind == "prior" else None,
+        unsquashed_k=2.0 if kind == "prior" else None,
         alibi=kind == "alibi",
         **TINY,
     )
@@ -53,7 +53,7 @@ def test_chunked_hidden_matches_forward(kind, q_chunk):
 
 def test_chunked_hidden_rejects_overlong_input():
     torch.manual_seed(0)
-    model = PriorLlama(ModelSpec(prior_k=None, **TINY)).eval()
+    model = PriorLlama(ModelSpec(unsquashed_k=None, **TINY)).eval()
     with pytest.raises(ValueError, match="max_seq_len"):
         model.chunked_hidden(tiny_ids(n=TINY["max_seq_len"] + 1))
 
@@ -113,7 +113,7 @@ def test_ladder_end_to_end(tiny_tokenizer, tmp_path):
         num_kv_heads=2,
         max_seq_len=512,
         rope_theta=10000.0,
-        prior_k=2.0,
+        unsquashed_k=2.0,
     )
     model = PriorLlama(spec).eval()
 

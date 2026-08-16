@@ -10,7 +10,7 @@ is shape-generic.
 import torch
 
 from unsquash.pretrain.model import PriorLlama, ModelSpec
-from unsquash.prior import prior_attention_bias
+from unsquash.prior import unsquashed_attention_bias
 
 TINY = dict(
     vocab_size=64,
@@ -24,9 +24,9 @@ TINY = dict(
 )
 
 
-def tiny_model(prior_k=2.0, seed=0):
+def tiny_model(unsquashed_k=2.0, seed=0):
     torch.manual_seed(seed)
-    return PriorLlama(ModelSpec(prior_k=prior_k, **TINY)).eval()
+    return PriorLlama(ModelSpec(unsquashed_k=unsquashed_k, **TINY)).eval()
 
 
 def tiny_ids(seed=1):
@@ -48,7 +48,7 @@ def test_hf_export_matches_under_prior_mask():
     hf = model.to_hf()
     hf.eval()
     ids = tiny_ids()
-    mask = prior_attention_bias(ids.shape[1], k=2.0, lam=1.0)
+    mask = unsquashed_attention_bias(ids.shape[1], k=2.0, lam=1.0)
     with torch.no_grad():
         ours = model(ids)
         theirs = hf(input_ids=ids, attention_mask=mask, use_cache=False).logits
@@ -56,7 +56,7 @@ def test_hf_export_matches_under_prior_mask():
 
 
 def test_hf_export_no_prior_matches_plain_causal():
-    model = tiny_model(prior_k=None)
+    model = tiny_model(unsquashed_k=None)
     hf = model.to_hf()
     hf.eval()
     ids = tiny_ids()

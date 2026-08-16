@@ -25,7 +25,7 @@ TINY = dict(
 
 def tiny_alibi_model(seed=0):
     torch.manual_seed(seed)
-    return PriorLlama(ModelSpec(prior_k=None, alibi=True, **TINY)).eval()
+    return PriorLlama(ModelSpec(unsquashed_k=None, alibi=True, **TINY)).eval()
 
 
 def tiny_ids(seed=1):
@@ -78,7 +78,7 @@ def test_bias_head_shared_at_zero_distance():
 
 def test_alibi_and_prior_mutually_exclusive():
     with pytest.raises(ValueError):
-        PriorLlama(ModelSpec(prior_k=2.0, alibi=True, **TINY))
+        PriorLlama(ModelSpec(unsquashed_k=2.0, alibi=True, **TINY))
 
 
 def test_sdpa_matches_eager_bias_path():
@@ -93,9 +93,9 @@ def test_sdpa_matches_eager_bias_path():
 def test_alibi_changes_the_function():
     # Same weights, bias on vs off: outputs must differ (the bias is real).
     torch.manual_seed(0)
-    with_bias = PriorLlama(ModelSpec(prior_k=None, alibi=True, **TINY)).eval()
+    with_bias = PriorLlama(ModelSpec(unsquashed_k=None, alibi=True, **TINY)).eval()
     torch.manual_seed(0)
-    without = PriorLlama(ModelSpec(prior_k=None, alibi=False, **TINY)).eval()
+    without = PriorLlama(ModelSpec(unsquashed_k=None, alibi=False, **TINY)).eval()
     ids = tiny_ids()
     with torch.no_grad():
         assert not torch.allclose(with_bias(ids), without(ids))
@@ -114,10 +114,10 @@ def test_prior_config_alibi_roundtrip(tmp_path):
     assert loaded.kind == "alibi" and loaded.num_heads == 9
 
 
-def test_prior_config_legacy_file_defaults_to_unsquash(tmp_path):
+def test_prior_config_legacy_file_defaults_to_unsquashed(tmp_path):
     (tmp_path / "unsquash_prior.json").write_text('{"k": 30.0, "lam": 1.0}')
     loaded = PriorConfig.load(tmp_path)
-    assert loaded.kind == "unsquash" and loaded.k == 30.0
+    assert loaded.kind == "unsquashed" and loaded.k == 30.0
 
 
 def test_prior_config_attention_bias_dispatch():
@@ -130,18 +130,18 @@ def test_prior_config_attention_bias_dispatch():
     assert bias.shape == (1, 1, 8, 8)
 
 
-@pytest.mark.parametrize("kind", ["alibi", "prior", "none"])
+@pytest.mark.parametrize("kind", ["alibi", "unsquashed", "none"])
 def test_from_pretrained_roundtrip(tmp_path, kind):
     if kind == "alibi":
         model = tiny_alibi_model()
         sidecar = PriorConfig(k=0.0, kind="alibi", num_heads=TINY["num_heads"])
-    elif kind == "prior":
+    elif kind == "unsquashed":
         torch.manual_seed(0)
-        model = PriorLlama(ModelSpec(prior_k=2.0, **TINY)).eval()
+        model = PriorLlama(ModelSpec(unsquashed_k=2.0, **TINY)).eval()
         sidecar = PriorConfig(k=2.0, lam=1.0)
     else:
         torch.manual_seed(0)
-        model = PriorLlama(ModelSpec(prior_k=None, **TINY)).eval()
+        model = PriorLlama(ModelSpec(unsquashed_k=None, **TINY)).eval()
         sidecar = None
 
     path = tmp_path / kind
@@ -151,7 +151,7 @@ def test_from_pretrained_roundtrip(tmp_path, kind):
 
     loaded = PriorLlama.from_pretrained(str(path))
     assert loaded.spec.alibi == (kind == "alibi")
-    assert (loaded.spec.prior_k is not None) == (kind == "prior")
+    assert (loaded.spec.unsquashed_k is not None) == (kind == "unsquashed")
     ids = tiny_ids()
     with torch.no_grad():
         torch.testing.assert_close(loaded(ids), model(ids), atol=1e-5, rtol=1e-5)

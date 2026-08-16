@@ -127,7 +127,8 @@ resume automatically under the same `--out-name`. Override GPU types with
 - Attribution capture requires `attn_implementation="eager"`
   (`output_attentions=True`), which the entry points set for you.
 - `k` defaults to the model's layer count everywhere; override with
-  `--prior_k`.
+  `--unsquashed_k`. ("Prior" is the generic term — you choose the unsquashed
+  prior or the ALiBi prior; unsquash-specific knobs say "unsquashed".)
 
 ## Tests
 

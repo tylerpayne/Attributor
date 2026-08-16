@@ -244,8 +244,8 @@ def run_ladder(settings: LadderSettings) -> dict:
         settings.model, max_seq_len=max_len + 64, rope_theta=rope_theta
     )
     logger.info(
-        "Loaded %s: alibi=%s prior_k=%s rope_theta=%s max_seq_len=%d",
-        settings.model, model.spec.alibi, model.spec.prior_k,
+        "Loaded %s: alibi=%s unsquashed_k=%s rope_theta=%s max_seq_len=%d",
+        settings.model, model.spec.alibi, model.spec.unsquashed_k,
         model.spec.rope_theta, model.spec.max_seq_len,
     )
     tokenizer = AutoTokenizer.from_pretrained(settings.model)

@@ -9,9 +9,9 @@ the SDPA additive mask in ``unsquash.pretrain.model``.
 Logging matches the retrofit trainer: train loss, held-out eval loss, and
 sink mass to ``train_log.jsonl``. Checkpoints export to HF format with the
 bias recorded in ``unsquash_prior.json``, so ``unsquash.eval`` runs on them
-unchanged. ``attn_bias`` selects the arm: "prior" (unsquash), "alibi"
-(linear-distance control), or "none" (plain causal control) — all three on
-identical data order and init seed.
+unchanged. ``prior`` selects the arm: "unsquashed" (log-distance prior),
+"alibi" (linear-distance prior), or "none" (plain causal control) — all
+three on identical data order and init seed.
 """
 
 from __future__ import annotations
@@ -55,11 +55,11 @@ class PretrainSettings:
     compile: bool = True
     device: str | None = None
     seed: int = 0
-    # attention bias: "prior" (unsquash log-distance), "alibi" (linear-
-    # distance control), or "none" (plain causal control)
-    attn_bias: str = "prior"
-    prior_k: float | None = None  # default: num_layers (attn_bias="prior")
-    prior_lam: float = 1.0
+    # which attention prior: "unsquashed" (log-distance), "alibi" (linear-
+    # distance), or "none" (plain causal control)
+    prior: str = "unsquashed"
+    unsquashed_k: float | None = None  # default: num_layers (prior="unsquashed")
+    unsquashed_lam: float = 1.0
     # bookkeeping
     log_every: int = 20
     eval_every: int = 500
@@ -85,19 +85,19 @@ def pretrain(settings: PretrainSettings) -> str:
     torch.manual_seed(settings.seed)
     device = settings.device or ("cuda" if torch.cuda.is_available() else "cpu")
 
-    if settings.attn_bias not in ("prior", "alibi", "none"):
-        raise ValueError(f"Unknown attn_bias: {settings.attn_bias!r}")
+    if settings.prior not in ("unsquashed", "alibi", "none"):
+        raise ValueError(f"Unknown prior: {settings.prior!r}")
     spec = ModelSpec.from_hf(settings.model_config, max_seq_len=settings.seq_len)
-    spec.prior_k = None
-    if settings.attn_bias == "prior":
-        spec.prior_k = settings.prior_k or float(spec.num_layers)
-        spec.prior_lam = settings.prior_lam
-    spec.alibi = settings.attn_bias == "alibi"
+    spec.unsquashed_k = None
+    if settings.prior == "unsquashed":
+        spec.unsquashed_k = settings.unsquashed_k or float(spec.num_layers)
+        spec.unsquashed_lam = settings.unsquashed_lam
+    spec.alibi = settings.prior == "alibi"
 
     logger.info(
-        "From-scratch %s: %d layers, attn_bias=%s (prior_k=%s), "
+        "From-scratch %s: %d layers, prior=%s (unsquashed_k=%s), "
         "%d steps of %d tokens (%.2fB total)",
-        settings.model_config, spec.num_layers, settings.attn_bias, spec.prior_k,
+        settings.model_config, spec.num_layers, settings.prior, spec.unsquashed_k,
         settings.steps, settings.tokens_per_step,
         settings.steps * settings.tokens_per_step / 1e9,
     )
@@ -157,9 +157,9 @@ def pretrain(settings: PretrainSettings) -> str:
         tokenizer.save_pretrained(path)
         # Record the training-time bias so eval/attribution re-applies it
         # ("auto" consumers read this sidecar; absent = plain causal).
-        if settings.attn_bias == "prior":
-            PriorConfig(k=spec.prior_k, lam=spec.prior_lam).save(path)
-        elif settings.attn_bias == "alibi":
+        if settings.prior == "unsquashed":
+            PriorConfig(k=spec.unsquashed_k, lam=spec.unsquashed_lam).save(path)
+        elif settings.prior == "alibi":
             PriorConfig(
                 k=0.0, kind="alibi", num_heads=spec.num_heads
             ).save(path)

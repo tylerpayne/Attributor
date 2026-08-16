@@ -36,10 +36,10 @@ def get_args():
     parser.add_argument("--ks", nargs="+", type=int, default=[1, 2, 5, 10])
     parser.add_argument("--out_dir", default=None,
                         help="Default: unsquash_eval_results/<model>/<split>")
-    parser.add_argument("--prior_k", type=float, default=None,
+    parser.add_argument("--unsquashed_k", type=float, default=None,
                         help="Apply the log-distance prior at capture time "
                              "(defaults to the checkpoint's recorded prior, if any)")
-    parser.add_argument("--prior_lambda", type=float, default=1.0)
+    parser.add_argument("--unsquashed_lambda", type=float, default=1.0)
     parser.add_argument("--no_prior", action="store_true",
                         help="Ignore any prior recorded next to the checkpoint")
     return parser.parse_args()
@@ -51,8 +51,8 @@ def main():
 
     if args.no_prior:
         prior = None
-    elif args.prior_k is not None:
-        prior = PriorConfig(k=args.prior_k, lam=args.prior_lambda)
+    elif args.unsquashed_k is not None:
+        prior = PriorConfig(k=args.unsquashed_k, lam=args.unsquashed_lambda)
     else:
         prior = "auto"
 
